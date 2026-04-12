@@ -271,6 +271,10 @@ function AuthPage({ mode, onComplete, onBack, onSwitch }) {
   const [email, setEmail] = useState(""); const [pass, setPass] = useState(""); const [name, setName] = useState("");
   const [error, setError] = useState(""); const [loading, setLoading] = useState(false);
   const [resetSent, setResetSent] = useState(false);
+  const [showForgot, setShowForgot] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+
+  const authInput = { ...inputBase, background:"#1a1a1a", borderColor:"#333", color:"#e0d6c8" };
 
   const handleSignup = async () => {
     if (!email.trim() || !pass.trim()) { setError("Email and password are required."); return; }
@@ -299,10 +303,10 @@ function AuthPage({ mode, onComplete, onBack, onSwitch }) {
   };
 
   const handleResetPassword = async () => {
-    if (!email.trim()) { setError("Enter your email first, then click Forgot password."); return; }
+    if (!resetEmail.trim()) { setError("Please enter your email."); return; }
     setLoading(true); setError("");
-    const { error: err } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-      redirectTo: "https://myshelflife.app",
+    const { error: err } = await supabase.auth.resetPasswordForEmail(resetEmail.trim(), {
+      redirectTo: window.location.origin,
     });
     setLoading(false);
     if (err) { setError(err.message); return; }
@@ -316,22 +320,84 @@ function AuthPage({ mode, onComplete, onBack, onSwitch }) {
       <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet" />
       <h1 style={{ fontFamily:"'Cinzel', serif", fontSize:36, fontWeight:900, margin:"0 0 32px", background:`linear-gradient(135deg, ${gold}, #e8d5a8, ${gold})`, WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", letterSpacing:4 }}>SHELFLIFE</h1>
       <div style={{ width:"100%", maxWidth:360 }}>
-        <h3 style={{ fontFamily:"'Cinzel', serif", color:gold, fontSize:18, marginBottom:20, textAlign:"center" }}>{mode==="login"?"Sign In":"Create Your Library"}</h3>
 
+        {/* FORGOT PASSWORD SCREEN */}
+        {showForgot ? (<div>
+          <h3 style={{ fontFamily:"'Cinzel', serif", color:gold, fontSize:18, marginBottom:8, textAlign:"center" }}>Reset Password</h3>
+          <p style={{ color:"#777", fontSize:13, textAlign:"center", marginBottom:20 }}>Enter your email and we'll send you a reset link.</p>
+          {error && <div style={{ background:"rgba(200,80,80,0.15)", border:"1px solid #933", borderRadius:6, padding:"10px 14px", marginBottom:16, fontSize:13, color:"#e88" }}>{error}</div>}
+          {resetSent ? (
+            <div style={{ textAlign:"center" }}>
+              <div style={{ background:"rgba(100,170,100,0.15)", border:"1px solid #393", borderRadius:6, padding:"16px", marginBottom:20, fontSize:14, color:"#8c8" }}>Reset link sent! Check your email inbox.</div>
+              <button onClick={()=>{setShowForgot(false);setResetSent(false);setError("");}} style={{ ...btnPrimary, width:"100%", padding:14 }}>Back to Sign In</button>
+            </div>
+          ) : (
+            <div>
+              <div style={{ marginBottom:20 }}><label style={labelBase}>Email</label><input style={authInput} type="email" value={resetEmail} onChange={e=>{setResetEmail(e.target.value);setError("");}} placeholder="your@email.com" onKeyDown={e=>{if(e.key==="Enter")handleResetPassword();}} /></div>
+              <button onClick={handleResetPassword} disabled={loading} style={{ ...btnPrimary, width:"100%", padding:14, opacity:loading?0.6:1 }}>{loading?"Sending...":"Send Reset Link"}</button>
+              <p onClick={()=>{setShowForgot(false);setError("");}} style={{ color:"#555", fontSize:13, textAlign:"center", marginTop:16, cursor:"pointer" }}>Back to Sign In</p>
+            </div>
+          )}
+        </div>) : (<div>
+
+          {/* LOGIN / SIGNUP SCREEN */}
+          <h3 style={{ fontFamily:"'Cinzel', serif", color:gold, fontSize:18, marginBottom:20, textAlign:"center" }}>{mode==="login"?"Sign In":"Create Your Library"}</h3>
+          {error && <div style={{ background:"rgba(200,80,80,0.15)", border:"1px solid #933", borderRadius:6, padding:"10px 14px", marginBottom:16, fontSize:13, color:"#e88" }}>{error}</div>}
+          {mode==="signup" && <div style={{ marginBottom:14 }}><label style={labelBase}>Display Name</label><input style={authInput} value={name} onChange={e=>setName(e.target.value)} placeholder="Your collector name" /></div>}
+          <div style={{ marginBottom:14 }}><label style={labelBase}>Email</label><input style={authInput} type="email" value={email} onChange={e=>{setEmail(e.target.value);setError("");}} placeholder="your@email.com" onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}} /></div>
+          <div style={{ marginBottom:mode==="login"?8:24 }}><label style={labelBase}>Password</label><input style={authInput} type="password" value={pass} onChange={e=>{setPass(e.target.value);setError("");}} placeholder={mode==="login"?"Enter password":"Create password (6+ chars)"} onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}} /></div>
+          {mode==="login"&&<p style={{ textAlign:"right", marginBottom:20 }}><span style={{ color:gold, fontSize:12, cursor:"pointer", fontFamily:"'EB Garamond', serif" }} onClick={()=>{setShowForgot(true);setResetEmail(email);setError("");}}>Forgot password?</span></p>}
+          <button onClick={handleSubmit} disabled={loading} style={{ ...btnPrimary, width:"100%", padding:14, opacity:loading?0.6:1 }}>
+            {loading ? "Please wait..." : mode==="login" ? "Enter ShelfLife" : "Begin Collecting"}
+          </button>
+          <p style={{ textAlign:"center", marginTop:16, fontSize:13, color:"#555" }}>{mode==="login"?"Don't have an account? ":"Already have an account? "}<span onClick={()=>{onSwitch();setError("");}} style={{ color:gold, cursor:"pointer" }}>{mode==="login"?"Sign up":"Sign in"}</span></p>
+          <p onClick={onBack} style={{ color:"#333", fontSize:13, textAlign:"center", marginTop:12, cursor:"pointer" }}>Back to home</p>
+        </div>)}
+
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   PASSWORD RESET HANDLER
+   ═══════════════════════════════════════════ */
+function ResetPasswordScreen({ onDone }) {
+  const [newPass, setNewPass] = useState("");
+  const [confirmPass, setConfirmPass] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [success, setSuccess] = useState(false);
+  const authInput = { ...inputBase, background:"#1a1a1a", borderColor:"#333", color:"#e0d6c8" };
+
+  const handleReset = async () => {
+    if (!newPass || !confirmPass) { setError("Please fill in both fields."); return; }
+    if (newPass.length < 6) { setError("Password must be at least 6 characters."); return; }
+    if (newPass !== confirmPass) { setError("Passwords don't match."); return; }
+    setLoading(true); setError("");
+    const { error: err } = await supabase.auth.updateUser({ password: newPass });
+    setLoading(false);
+    if (err) { setError(err.message); return; }
+    setSuccess(true);
+    setTimeout(() => onDone(), 2000);
+  };
+
+  return (
+    <div style={{ minHeight:"100vh", background:`radial-gradient(ellipse at 50% 30%, #1a1510 0%, #0a0908 60%, #050505 100%)`, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:32, fontFamily:"'EB Garamond', serif" }}>
+      <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet" />
+      <h1 style={{ fontFamily:"'Cinzel', serif", fontSize:36, fontWeight:900, margin:"0 0 32px", background:`linear-gradient(135deg, ${gold}, #e8d5a8, ${gold})`, WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", letterSpacing:4 }}>SHELFLIFE</h1>
+      <div style={{ width:"100%", maxWidth:360 }}>
+        <h3 style={{ fontFamily:"'Cinzel', serif", color:gold, fontSize:18, marginBottom:20, textAlign:"center" }}>Set New Password</h3>
         {error && <div style={{ background:"rgba(200,80,80,0.15)", border:"1px solid #933", borderRadius:6, padding:"10px 14px", marginBottom:16, fontSize:13, color:"#e88" }}>{error}</div>}
-        {resetSent && <div style={{ background:"rgba(100,170,100,0.15)", border:"1px solid #393", borderRadius:6, padding:"10px 14px", marginBottom:16, fontSize:13, color:"#8c8" }}>Password reset link sent! Check your email.</div>}
-
-        {mode==="signup" && <div style={{ marginBottom:14 }}><label style={labelBase}>Display Name</label><input style={inputBase} value={name} onChange={e=>setName(e.target.value)} placeholder="Your collector name" /></div>}
-        <div style={{ marginBottom:14 }}><label style={labelBase}>Email</label><input style={inputBase} type="email" value={email} onChange={e=>{setEmail(e.target.value);setError("");}} placeholder="your@email.com" onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}} /></div>
-        <div style={{ marginBottom:mode==="login"?8:24 }}><label style={labelBase}>Password</label><input style={inputBase} type="password" value={pass} onChange={e=>{setPass(e.target.value);setError("");}} placeholder={mode==="login"?"Enter password":"Create password (6+ chars)"} onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}} /></div>
-        {mode==="login"&&<p style={{ textAlign:"right", marginBottom:20 }}><span style={{ color:gold, fontSize:12, cursor:"pointer", fontFamily:"'EB Garamond', serif" }} onClick={handleResetPassword}>Forgot password?</span></p>}
-
-        <button onClick={handleSubmit} disabled={loading} style={{ ...btnPrimary, width:"100%", padding:14, opacity:loading?0.6:1 }}>
-          {loading ? "Please wait..." : mode==="login" ? "Enter ShelfLife" : "Begin Collecting"}
-        </button>
-
-        <p style={{ textAlign:"center", marginTop:16, fontSize:13, color:"#555" }}>{mode==="login"?"Don't have an account? ":"Already have an account? "}<span onClick={()=>{onSwitch();setError("");setResetSent(false);}} style={{ color:gold, cursor:"pointer" }}>{mode==="login"?"Sign up":"Sign in"}</span></p>
-        <p onClick={onBack} style={{ color:"#333", fontSize:13, textAlign:"center", marginTop:12, cursor:"pointer" }}>Back to home</p>
+        {success ? (
+          <div style={{ background:"rgba(100,170,100,0.15)", border:"1px solid #393", borderRadius:6, padding:"16px", fontSize:14, color:"#8c8", textAlign:"center" }}>Password updated! Redirecting...</div>
+        ) : (
+          <div>
+            <div style={{ marginBottom:14 }}><label style={labelBase}>New Password</label><input style={authInput} type="password" value={newPass} onChange={e=>{setNewPass(e.target.value);setError("");}} placeholder="New password (6+ chars)" /></div>
+            <div style={{ marginBottom:24 }}><label style={labelBase}>Confirm Password</label><input style={authInput} type="password" value={confirmPass} onChange={e=>{setConfirmPass(e.target.value);setError("");}} placeholder="Confirm new password" onKeyDown={e=>{if(e.key==="Enter")handleReset();}} /></div>
+            <button onClick={handleReset} disabled={loading} style={{ ...btnPrimary, width:"100%", padding:14, opacity:loading?0.6:1 }}>{loading?"Updating...":"Update Password"}</button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1193,7 +1259,7 @@ function getTheme(dark) {
 }
 
 export default function App() {
-  const [appState, setAppState] = useState("loading"); // loading | public | auth | app
+  const [appState, setAppState] = useState("loading"); // loading | public | auth | app | reset
   const [authMode, setAuthMode] = useState("login");
   const [page, setPage] = useState("home");
   const [books, setBooks] = useState(MY_BOOKS);
@@ -1217,12 +1283,15 @@ export default function App() {
     };
     checkSession();
 
-    // Listen for auth changes (login, logout, token refresh)
+    // Listen for auth changes (login, logout, token refresh, password recovery)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        if (event === "SIGNED_IN" && session?.user) {
+        if (event === "PASSWORD_RECOVERY") {
+          setUser(session?.user || null);
+          setAppState("reset");
+        } else if (event === "SIGNED_IN" && session?.user) {
           setUser(session.user);
-          setAppState("app");
+          if (appState !== "reset") setAppState("app");
           setPage("home");
         } else if (event === "SIGNED_OUT") {
           setUser(null);
@@ -1315,6 +1384,7 @@ export default function App() {
 
   if (appState === "public") return <PublicHomePage onLogin={() => { setAuthMode("login"); setAppState("auth"); }} onSignup={() => { setAuthMode("signup"); setAppState("auth"); }} onBrowse={() => { setAppState("app"); setPage("discover"); }} />;
   if (appState === "auth") return <AuthPage mode={authMode} onComplete={(u) => { setUser(u); setAppState("app"); setPage("home"); }} onBack={() => setAppState("public")} onSwitch={() => setAuthMode(m => m === "login" ? "signup" : "login")} />;
+  if (appState === "reset") return <ResetPasswordScreen onDone={() => setAppState("app")} />;
 
   if (viewingCollector) return (
     <div className="vault-app" style={{ minHeight:"100vh", fontFamily:"'EB Garamond', serif" }}>
