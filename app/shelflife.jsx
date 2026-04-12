@@ -135,6 +135,12 @@ async function dbLoadCollection(userId) {
 }
 
 async function dbAddBook(userId, book) {
+  // Also save to the shared books table so others can find it
+  await supabase.from("books").upsert(
+    { title: book.title, author: book.author },
+    { onConflict: "title,author", ignoreDuplicates: true }
+  );
+
   const { data, error } = await supabase
     .from("user_collection")
     .insert({
@@ -536,84 +542,17 @@ function HomePage({ books, setPage, t, user, setBooks, setModal }) {
   const tp = books.reduce((s,b)=>s+(Number(b.purchasePrice)||0),0);
   const tg = tv-tp;
   const top = [...books].sort((a,b)=>(Number(b.currentValue)||0)-(Number(a.currentValue)||0))[0];
-  const [searchQ, setSearchQ] = useState("");
-  const [searchResults, setSearchResults] = useState([]);
-  const [searching, setSearching] = useState(false);
-  const [showAddForm, setShowAddForm] = useState(null); // null or prefilled book
-  const searchTimer = useRef(null);
-
-  const handleSearch = (q) => {
-    setSearchQ(q);
-    clearTimeout(searchTimer.current);
-    if (q.trim().length < 2) { setSearchResults([]); return; }
-    searchTimer.current = setTimeout(async () => {
-      setSearching(true);
-      // Search local DB first
-      const dbResults = await dbSearchBooks(q);
-      // Also search the built-in BOOK_DB for offline fallback
-      const ql = q.toLowerCase();
-      const localResults = BOOK_DB.filter(b => b.title.toLowerCase().includes(ql) || b.author.toLowerCase().includes(ql)).map(b => ({ ...b, source: "local" }));
-      // Merge and deduplicate
-      const seen = new Set();
-      const merged = [];
-      [...dbResults, ...localResults].forEach(r => {
-        const key = (r.title + "|" + r.author).toLowerCase();
-        if (!seen.has(key)) { seen.add(key); merged.push(r); }
-      });
-      setSearchResults(merged.slice(0, 15));
-      setSearching(false);
-    }, 400);
-  };
-
-  const handleAddFromSearch = (result) => {
-    const coverUrl = result.coverId ? `https://covers.openlibrary.org/b/id/${result.coverId}-L.jpg` : "";
-    setShowAddForm({ ...emptyBook, title: result.title, author: result.author, coverUrl });
-    setSearchQ("");
-    setSearchResults([]);
-  };
-
-  const handleSaveBook = async (formData) => {
-    if (!user) return;
-    const saved = await dbAddBook(user.id, formData);
-    if (saved) setBooks(prev => [saved, ...prev]);
-    setShowAddForm(null);
-  };
 
   return (
     <div style={{ padding:"24px 20px 100px" }}>
       <h2 style={{ fontFamily:"'Cinzel', serif", fontSize:22, color:"#e0d6c8", margin:"0 0 4px" }}>Your Library</h2>
       <p style={{ color:"#555", fontSize:12, margin:"0 0 16px", fontStyle:"italic" }}>Collection at a glance</p>
 
-      {/* Search Bar */}
-      <div style={{ position:"relative", marginBottom:24 }}>
-        <input style={{ ...inputBase, fontSize:15, padding:"14px 16px", background:"#111", border:`1px solid ${gold}30`, borderRadius:10 }} placeholder="Search for a book to add..." value={searchQ} onChange={e=>handleSearch(e.target.value)} />
-        {searching && <div style={{ position:"absolute", right:14, top:"50%", transform:"translateY(-50%)", width:16, height:16, border:`2px solid #333`, borderTopColor:gold, borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />}
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-
-        {searchResults.length > 0 && (
-          <div style={{ position:"absolute", top:"100%", left:0, right:0, background:"#1a1a1a", border:`1px solid ${borderClr}`, borderRadius:"0 0 10px 10px", maxHeight:300, overflowY:"auto", zIndex:100, boxShadow:"0 12px 40px rgba(0,0,0,0.8)" }}>
-            {searchResults.map((r, i) => (
-              <div key={i} onClick={()=>handleAddFromSearch(r)} style={{ padding:"12px 16px", cursor:"pointer", borderBottom:`1px solid ${borderClr}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}
-                onMouseEnter={e=>{e.currentTarget.style.background="#222";}} onMouseLeave={e=>{e.currentTarget.style.background="transparent";}}>
-                <div>
-                  <div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{r.title}</div>
-                  <div style={{ fontSize:12, color:"#666", fontStyle:"italic" }}>{r.author} {r.year && `(${r.year})`}</div>
-                </div>
-                <span style={{ fontSize:10, color:gold, fontFamily:"'Cinzel', serif" }}>+ ADD</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {searchQ.trim().length >= 2 && !searching && searchResults.length === 0 && (
-          <div style={{ position:"absolute", top:"100%", left:0, right:0, background:"#1a1a1a", border:`1px solid ${borderClr}`, borderRadius:"0 0 10px 10px", padding:"16px", textAlign:"center", zIndex:100 }}>
-            <p style={{ color:"#555", fontSize:13, margin:"0 0 8px" }}>No results found.</p>
-            <button onClick={()=>{setShowAddForm({...emptyBook, title:searchQ});setSearchQ("");setSearchResults([]);}} style={{ ...btnSmall, color:gold, borderColor:`${gold}40` }}>+ Add Manually</button>
-          </div>
-        )}
+      {/* Search Bar - taps to full search page */}
+      <div onClick={()=>setPage("search")} style={{ background:"#111", border:`1px solid ${gold}30`, borderRadius:10, padding:"14px 16px", marginBottom:24, cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}>
+        <span style={{ color:"#555", fontSize:16 }}>&#9906;</span>
+        <span style={{ color:"#666", fontSize:15, fontFamily:"'EB Garamond', serif" }}>Search for a book to add...</span>
       </div>
-
-      {/* Add Book Modal from Search */}
-      {showAddForm && <Modal onClose={()=>setShowAddForm(null)}><BookForm book={showAddForm} onSave={handleSaveBook} onCancel={()=>setShowAddForm(null)} /></Modal>}
 
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:24 }}>
         {[["Volumes",books.length,"#e0d6c8"],["Value","$"+tv.toLocaleString(),gold],["Invested","$"+tp.toLocaleString(),"#666"],["Gain",(tg>=0?"+":"")+"$"+tg.toLocaleString(),tg>=0?"#6a6":"#c66"]].map(([l,v,c])=>(
@@ -645,6 +584,131 @@ function HomePage({ books, setPage, t, user, setBooks, setModal }) {
         <SH title="Community" sub="Recent collector additions" />
         {COMMUNITY_ACTIVITY.slice(0,4).map((a,i)=>(<div key={i} style={{ padding:"8px 0", borderBottom:`1px solid ${borderClr}`, fontSize:12 }}><span style={{ color:gold, fontFamily:"'Cinzel', serif" }}>{a.user}</span> <span style={{ color:"#444" }}>added</span> <span style={{ color:"#e0d6c8" }}>{a.title}</span> <span style={{ color:"#333" }}>· {a.edition} · {a.time}</span></div>))}
       </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════
+   SEARCH PAGE (Full Screen - Like Goodreads)
+   ═══════════════════════════════════════════ */
+function SearchPage({ onBack, onAddBook, user, setBooks }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
+  const [showAddForm, setShowAddForm] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const timer = useRef(null);
+  const inputRef = useRef(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const doSearch = (q) => {
+    setQuery(q);
+    clearTimeout(timer.current);
+    if (q.trim().length < 2) { setResults([]); setHasSearched(false); return; }
+    timer.current = setTimeout(async () => {
+      setSearching(true);
+      setHasSearched(true);
+      const dbResults = await dbSearchBooks(q);
+      const ql = q.toLowerCase();
+      const localResults = BOOK_DB.filter(b => b.title.toLowerCase().includes(ql) || b.author.toLowerCase().includes(ql)).map(b => ({ ...b, source: "local" }));
+      const seen = new Set();
+      const merged = [];
+      [...dbResults, ...localResults].forEach(r => {
+        const key = (r.title + "|" + r.author).toLowerCase();
+        if (!seen.has(key)) { seen.add(key); merged.push(r); }
+      });
+      setResults(merged);
+      setSearching(false);
+    }, 400);
+  };
+
+  const handleSelect = (result) => {
+    const coverUrl = result.coverId ? `https://covers.openlibrary.org/b/id/${result.coverId}-L.jpg` : "";
+    setShowAddForm({ ...emptyBook, title: result.title, author: result.author, coverUrl });
+  };
+
+  const handleSave = async (formData) => {
+    if (!user) return;
+    setSaving(true);
+    const saved = await dbAddBook(user.id, formData);
+    if (saved) setBooks(prev => [saved, ...prev]);
+    setSaving(false);
+    setShowAddForm(null);
+  };
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#0a0a0a", padding:"0 0 100px" }}>
+      {/* Search Header */}
+      <div style={{ position:"sticky", top:0, zIndex:50, background:"#0a0a0a", borderBottom:`1px solid ${borderClr}`, padding:"12px 16px", display:"flex", alignItems:"center", gap:10 }}>
+        <button onClick={onBack} style={{ background:"none", border:"none", color:"#888", fontSize:20, cursor:"pointer", padding:"4px 8px" }}>&#8592;</button>
+        <div style={{ flex:1, position:"relative" }}>
+          <input
+            ref={inputRef}
+            style={{ width:"100%", background:"#151515", border:`1px solid ${borderClr}`, color:"#e0d6c8", padding:"12px 40px 12px 14px", borderRadius:8, fontSize:16, fontFamily:"'EB Garamond', serif", boxSizing:"border-box" }}
+            placeholder="Title, author, or ISBN..."
+            value={query}
+            onChange={e => doSearch(e.target.value)}
+          />
+          {searching && <div style={{ position:"absolute", right:14, top:"50%", transform:"translateY(-50%)", width:16, height:16, border:"2px solid #333", borderTopColor:gold, borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />}
+        </div>
+      </div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+
+      {/* Results */}
+      <div style={{ padding:"8px 0" }}>
+        {hasSearched && !searching && results.length > 0 && (
+          <div style={{ padding:"8px 20px 4px", fontSize:12, color:"#666" }}>{results.length} result{results.length !== 1 ? "s" : ""} for "{query}"</div>
+        )}
+
+        {results.map((r, i) => (
+          <div key={i} onClick={() => handleSelect(r)} style={{
+            padding:"14px 20px", cursor:"pointer", borderBottom:`1px solid ${borderClr}`,
+            display:"flex", gap:12, alignItems:"center",
+          }}
+          onMouseEnter={e=>{e.currentTarget.style.background="#151515";}}
+          onMouseLeave={e=>{e.currentTarget.style.background="transparent";}}
+          >
+            {r.coverId ? (
+              <img src={`https://covers.openlibrary.org/b/id/${r.coverId}-S.jpg`} alt="" style={{ width:40, height:56, objectFit:"cover", borderRadius:3, border:"1px solid #333", flexShrink:0 }} />
+            ) : (
+              <div style={{ width:40, height:56, borderRadius:3, border:"1px solid #222", background:"#151515", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                <span style={{ fontSize:8, color:"#333", fontFamily:"'Cinzel', serif" }}>N/A</span>
+              </div>
+            )}
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{r.title}</div>
+              <div style={{ fontSize:13, color:"#777", fontStyle:"italic" }}>{r.author}</div>
+              {r.year && <div style={{ fontSize:11, color:"#444", marginTop:2 }}>{r.year}</div>}
+            </div>
+            <span style={{ fontSize:10, color:gold, fontFamily:"'Cinzel', serif", flexShrink:0, padding:"4px 10px", border:`1px solid ${gold}40`, borderRadius:4 }}>+ ADD</span>
+          </div>
+        ))}
+
+        {hasSearched && !searching && results.length === 0 && (
+          <div style={{ padding:"40px 20px", textAlign:"center" }}>
+            <p style={{ color:"#666", fontSize:15, marginBottom:12 }}>No results for "{query}"</p>
+            <p style={{ color:"#444", fontSize:13, marginBottom:20 }}>Can't find your book? Add it manually.</p>
+            <button onClick={() => setShowAddForm({ ...emptyBook, title: query })} style={{ ...btnPrimary, padding:"10px 24px", fontSize:12 }}>+ Add Manually</button>
+          </div>
+        )}
+
+        {!hasSearched && (
+          <div style={{ padding:"60px 20px", textAlign:"center" }}>
+            <div style={{ fontSize:36, marginBottom:12, opacity:0.2 }}>&#9906;</div>
+            <p style={{ color:"#555", fontSize:14 }}>Search millions of books</p>
+            <p style={{ color:"#444", fontSize:12, marginTop:4 }}>Type a title, author name, or ISBN</p>
+          </div>
+        )}
+      </div>
+
+      {/* Add Form Modal */}
+      {showAddForm && (
+        <Modal onClose={() => setShowAddForm(null)}>
+          <BookForm book={showAddForm} onSave={handleSave} onCancel={() => setShowAddForm(null)} />
+        </Modal>
+      )}
     </div>
   );
 }
@@ -1673,6 +1737,7 @@ export default function App() {
       <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet" />
 
       {page === "home" && <HomePage books={books} setPage={setPage} t={t} user={user} setBooks={setBooks} setModal={setModal} />}
+      {page === "search" && <SearchPage onBack={()=>setPage("home")} user={user} setBooks={setBooks} />}
       {page === "shelf" && <ShelfPage books={books} setBooks={setBooks} modal={modal} setModal={setModal} t={t} user={user} />}
       {page === "market" && <MarketPage setModal={setModal} t={t} />}
       {page === "discover" && <DiscoverPage onViewProfile={c => setViewingCollector(c)} t={t} />}
