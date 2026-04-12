@@ -641,26 +641,32 @@ function SearchPage({ onBack, onAddBook, user, setBooks }) {
   return (
     <div style={{ minHeight:"100vh", background:"#0a0a0a", padding:"0 0 100px" }}>
       {/* Search Header */}
-      <div style={{ position:"sticky", top:0, zIndex:50, background:"#0a0a0a", borderBottom:`1px solid ${borderClr}`, padding:"12px 16px", display:"flex", alignItems:"center", gap:10 }}>
-        <button onClick={onBack} style={{ background:"none", border:"none", color:"#888", fontSize:20, cursor:"pointer", padding:"4px 8px" }}>&#8592;</button>
-        <div style={{ flex:1, position:"relative" }}>
-          <input
-            ref={inputRef}
-            style={{ width:"100%", background:"#151515", border:`1px solid ${borderClr}`, color:"#e0d6c8", padding:"12px 40px 12px 14px", borderRadius:8, fontSize:16, fontFamily:"'EB Garamond', serif", boxSizing:"border-box" }}
-            placeholder="Title, author, or ISBN..."
-            value={query}
-            onChange={e => doSearch(e.target.value)}
-          />
-          {searching && <div style={{ position:"absolute", right:14, top:"50%", transform:"translateY(-50%)", width:16, height:16, border:"2px solid #333", borderTopColor:gold, borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />}
+      <div style={{ position:"sticky", top:0, zIndex:50, background:"#0a0a0a", borderBottom:`1px solid ${borderClr}`, padding:"12px 16px" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <button onClick={onBack} style={{ background:"none", border:"none", color:"#888", fontSize:20, cursor:"pointer", padding:"4px 8px" }}>&#8592;</button>
+          <div style={{ flex:1, position:"relative" }}>
+            <input
+              ref={inputRef}
+              style={{ width:"100%", background:"#151515", border:`1px solid ${borderClr}`, color:"#e0d6c8", padding:"12px 40px 12px 14px", borderRadius:8, fontSize:16, fontFamily:"'EB Garamond', serif", boxSizing:"border-box" }}
+              placeholder="Title, author, or ISBN..."
+              value={query}
+              onChange={e => doSearch(e.target.value)}
+            />
+            {searching && <div style={{ position:"absolute", right:14, top:"50%", transform:"translateY(-50%)", width:16, height:16, border:"2px solid #333", borderTopColor:gold, borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />}
+          </div>
+        </div>
+        {/* Always visible Add Manually */}
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:10, paddingLeft:40 }}>
+          <button onClick={() => setShowAddForm({ ...emptyBook, title: query || "" })} style={{ background:"none", border:"none", color:gold, fontSize:12, cursor:"pointer", fontFamily:"'Cinzel', serif", letterSpacing:0.5 }}>+ Add Manually</button>
+          {hasSearched && !searching && results.length > 0 && (
+            <span style={{ fontSize:12, color:"#666" }}>{results.length} result{results.length !== 1 ? "s" : ""}</span>
+          )}
         </div>
       </div>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       {/* Results */}
-      <div style={{ padding:"8px 0" }}>
-        {hasSearched && !searching && results.length > 0 && (
-          <div style={{ padding:"8px 20px 4px", fontSize:12, color:"#666" }}>{results.length} result{results.length !== 1 ? "s" : ""} for "{query}"</div>
-        )}
+      <div style={{ padding:"4px 0" }}>
 
         {results.map((r, i) => (
           <div key={i} onClick={() => handleSelect(r)} style={{
@@ -688,9 +694,8 @@ function SearchPage({ onBack, onAddBook, user, setBooks }) {
 
         {hasSearched && !searching && results.length === 0 && (
           <div style={{ padding:"40px 20px", textAlign:"center" }}>
-            <p style={{ color:"#666", fontSize:15, marginBottom:12 }}>No results for "{query}"</p>
-            <p style={{ color:"#444", fontSize:13, marginBottom:20 }}>Can't find your book? Add it manually.</p>
-            <button onClick={() => setShowAddForm({ ...emptyBook, title: query })} style={{ ...btnPrimary, padding:"10px 24px", fontSize:12 }}>+ Add Manually</button>
+            <p style={{ color:"#666", fontSize:15, marginBottom:8 }}>No results for "{query}"</p>
+            <p style={{ color:"#444", fontSize:13 }}>Try a different search or use "+ Add Manually" above</p>
           </div>
         )}
 
@@ -1000,8 +1005,68 @@ function SearchBox({ onSelect, books }) {
 
 function BookForm({ book, onSave, onCancel, isEdit }) {
   const [f, setF] = useState(()=>book?{...book}:{...emptyBook}); const s=(k,v)=>setF(p=>({...p,[k]:v})); const valid=f.title.trim()&&f.author.trim();
+  const [searchingCover, setSearchingCover] = useState(false);
+  const [coverOptions, setCoverOptions] = useState([]);
+
+  const searchCover = async () => {
+    if (!f.title.trim()) return;
+    setSearchingCover(true);
+    setCoverOptions([]);
+    try {
+      const q = encodeURIComponent(f.title + (f.author ? " " + f.author : ""));
+      const resp = await fetch(`https://openlibrary.org/search.json?q=${q}&limit=8&fields=key,title,author_name,cover_i`);
+      const json = await resp.json();
+      const covers = (json.docs || []).filter(d => d.cover_i).map(d => ({
+        id: d.cover_i,
+        url: `https://covers.openlibrary.org/b/id/${d.cover_i}-L.jpg`,
+        thumb: `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg`,
+        title: d.title,
+        author: (d.author_name || []).join(", "),
+      }));
+      setCoverOptions(covers);
+    } catch (e) { console.log("Cover search failed"); }
+    setSearchingCover(false);
+  };
+
   return (<div>
     <h2 style={{ fontFamily:"'Cinzel', serif", color:gold, margin:"0 0 16px", fontSize:18 }}>{isEdit?"Edit":"Collector Details"}</h2>
+    
+    {/* Cover Preview */}
+    <div style={{ display:"flex", gap:14, marginBottom:16 }}>
+      <div style={{ width:80, height:110, borderRadius:4, border:`1px solid ${borderClr}`, background:"#111", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, overflow:"hidden" }}>
+        {f.coverUrl ? (
+          <img src={f.coverUrl} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} />
+        ) : (
+          <span style={{ fontSize:9, color:"#333" }}>NO COVER</span>
+        )}
+      </div>
+      <div style={{ flex:1 }}>
+        <label style={labelBase}>Cover Image</label>
+        <input style={{ ...inputBase, fontSize:12, padding:"8px 10px", marginBottom:6 }} placeholder="Paste image URL..." value={f.coverUrl||""} onChange={e=>s("coverUrl",e.target.value)} />
+        <button onClick={searchCover} disabled={searchingCover} style={{ background:"none", border:`1px solid ${gold}40`, color:gold, padding:"4px 10px", borderRadius:4, cursor:"pointer", fontSize:11, fontFamily:"'Cinzel', serif", opacity:searchingCover?0.5:1 }}>
+          {searchingCover ? "Searching..." : "Find Cover"}
+        </button>
+        {f.coverUrl && <button onClick={()=>s("coverUrl","")} style={{ background:"none", border:"none", color:"#666", padding:"4px 8px", cursor:"pointer", fontSize:11, marginLeft:6 }}>Remove</button>}
+      </div>
+    </div>
+
+    {/* Cover Options Grid */}
+    {coverOptions.length > 0 && (
+      <div style={{ marginBottom:16 }}>
+        <div style={{ fontSize:11, color:"#666", marginBottom:6 }}>Select a cover:</div>
+        <div style={{ display:"flex", gap:8, overflowX:"auto", paddingBottom:8 }}>
+          {coverOptions.map((c, i) => (
+            <div key={i} onClick={() => { s("coverUrl", c.url); setCoverOptions([]); }} style={{
+              width:55, height:78, borderRadius:3, overflow:"hidden", cursor:"pointer", flexShrink:0,
+              border: f.coverUrl === c.url ? `2px solid ${gold}` : "1px solid #333",
+            }}>
+              <img src={c.thumb} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} />
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
+
     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Title *</label><input style={inputBase} value={f.title} onChange={e=>s("title",e.target.value)} /></div>
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Author *</label><input style={inputBase} value={f.author} onChange={e=>s("author",e.target.value)} /></div>
