@@ -306,7 +306,7 @@ function AuthPage({ mode, onComplete, onBack, onSwitch }) {
     if (!resetEmail.trim()) { setError("Please enter your email."); return; }
     setLoading(true); setError("");
     const { error: err } = await supabase.auth.resetPasswordForEmail(resetEmail.trim(), {
-      redirectTo: window.location.origin,
+      redirectTo: window.location.origin + "?type=recovery",
     });
     setLoading(false);
     if (err) { setError(err.message); return; }
@@ -1273,7 +1273,19 @@ export default function App() {
   // Check for existing session on load
   useEffect(() => {
     const checkSession = async () => {
+      // Check if this is a password recovery redirect
+      const hash = window.location.hash;
+      const params = new URLSearchParams(window.location.search);
+      const isRecovery = hash.includes("type=recovery") || params.get("type") === "recovery";
+      
       const { data: { session } } = await supabase.auth.getSession();
+      if (isRecovery && session?.user) {
+        setUser(session.user);
+        setAppState("reset");
+        // Clean the URL
+        window.history.replaceState(null, "", window.location.pathname);
+        return;
+      }
       if (session?.user) {
         setUser(session.user);
         setAppState("app");
@@ -1283,7 +1295,7 @@ export default function App() {
     };
     checkSession();
 
-    // Listen for auth changes (login, logout, token refresh, password recovery)
+    // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if (event === "PASSWORD_RECOVERY") {
@@ -1291,8 +1303,9 @@ export default function App() {
           setAppState("reset");
         } else if (event === "SIGNED_IN" && session?.user) {
           setUser(session.user);
-          if (appState !== "reset") setAppState("app");
-          setPage("home");
+          // Don't override reset screen
+          setAppState(prev => prev === "reset" ? "reset" : "app");
+          if (appState !== "reset") setPage("home");
         } else if (event === "SIGNED_OUT") {
           setUser(null);
           setAppState("public");
