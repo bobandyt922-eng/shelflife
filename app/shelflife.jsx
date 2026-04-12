@@ -1,4 +1,5 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
+import { supabase } from "../lib/supabase";
 
 /* ═══════════════════════════════════════════
    CONSTANTS & DATA
@@ -268,18 +269,68 @@ function PublicHomePage({ onLogin, onSignup, onBrowse }) {
    ═══════════════════════════════════════════ */
 function AuthPage({ mode, onComplete, onBack, onSwitch }) {
   const [email, setEmail] = useState(""); const [pass, setPass] = useState(""); const [name, setName] = useState("");
+  const [error, setError] = useState(""); const [loading, setLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+
+  const handleSignup = async () => {
+    if (!email.trim() || !pass.trim()) { setError("Email and password are required."); return; }
+    if (pass.length < 6) { setError("Password must be at least 6 characters."); return; }
+    setLoading(true); setError("");
+    const { data, error: err } = await supabase.auth.signUp({
+      email: email.trim(),
+      password: pass,
+      options: { data: { display_name: name.trim() || email.split("@")[0] } }
+    });
+    setLoading(false);
+    if (err) { setError(err.message); return; }
+    if (data?.user) onComplete(data.user);
+  };
+
+  const handleLogin = async () => {
+    if (!email.trim() || !pass.trim()) { setError("Email and password are required."); return; }
+    setLoading(true); setError("");
+    const { data, error: err } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password: pass,
+    });
+    setLoading(false);
+    if (err) { setError(err.message); return; }
+    if (data?.user) onComplete(data.user);
+  };
+
+  const handleResetPassword = async () => {
+    if (!email.trim()) { setError("Enter your email first, then click Forgot password."); return; }
+    setLoading(true); setError("");
+    const { error: err } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: "https://myshelflife.app",
+    });
+    setLoading(false);
+    if (err) { setError(err.message); return; }
+    setResetSent(true);
+  };
+
+  const handleSubmit = () => { if (mode === "login") handleLogin(); else handleSignup(); };
+
   return (
     <div style={{ minHeight:"100vh", background:`radial-gradient(ellipse at 50% 30%, #1a1510 0%, #0a0908 60%, #050505 100%)`, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:32, fontFamily:"'EB Garamond', serif" }}>
       <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet" />
       <h1 style={{ fontFamily:"'Cinzel', serif", fontSize:36, fontWeight:900, margin:"0 0 32px", background:`linear-gradient(135deg, ${gold}, #e8d5a8, ${gold})`, WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", letterSpacing:4 }}>SHELFLIFE</h1>
       <div style={{ width:"100%", maxWidth:360 }}>
         <h3 style={{ fontFamily:"'Cinzel', serif", color:gold, fontSize:18, marginBottom:20, textAlign:"center" }}>{mode==="login"?"Sign In":"Create Your Library"}</h3>
+
+        {error && <div style={{ background:"rgba(200,80,80,0.15)", border:"1px solid #933", borderRadius:6, padding:"10px 14px", marginBottom:16, fontSize:13, color:"#e88" }}>{error}</div>}
+        {resetSent && <div style={{ background:"rgba(100,170,100,0.15)", border:"1px solid #393", borderRadius:6, padding:"10px 14px", marginBottom:16, fontSize:13, color:"#8c8" }}>Password reset link sent! Check your email.</div>}
+
         {mode==="signup" && <div style={{ marginBottom:14 }}><label style={labelBase}>Display Name</label><input style={inputBase} value={name} onChange={e=>setName(e.target.value)} placeholder="Your collector name" /></div>}
-        <div style={{ marginBottom:14 }}><label style={labelBase}>Email</label><input style={inputBase} type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="your@email.com" /></div>
-        <div style={{ marginBottom:mode==="login"?8:24 }}><label style={labelBase}>Password</label><input style={inputBase} type="password" value={pass} onChange={e=>setPass(e.target.value)} placeholder={mode==="login"?"Enter password":"Create password"} /></div>
-        {mode==="login"&&<p style={{ textAlign:"right", marginBottom:20 }}><span style={{ color:gold, fontSize:12, cursor:"pointer", fontFamily:"'EB Garamond', serif" }} onClick={()=>alert("Password reset link sent! (Demo)")}>Forgot password?</span></p>}
-        <button onClick={onComplete} style={{ ...btnPrimary, width:"100%", padding:14 }}>{mode==="login"?"Enter ShelfLife":"Begin Collecting"}</button>
-        <p style={{ textAlign:"center", marginTop:16, fontSize:13, color:"#555" }}>{mode==="login"?"Don't have an account? ":"Already have an account? "}<span onClick={onSwitch} style={{ color:gold, cursor:"pointer" }}>{mode==="login"?"Sign up":"Sign in"}</span></p>
+        <div style={{ marginBottom:14 }}><label style={labelBase}>Email</label><input style={inputBase} type="email" value={email} onChange={e=>{setEmail(e.target.value);setError("");}} placeholder="your@email.com" onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}} /></div>
+        <div style={{ marginBottom:mode==="login"?8:24 }}><label style={labelBase}>Password</label><input style={inputBase} type="password" value={pass} onChange={e=>{setPass(e.target.value);setError("");}} placeholder={mode==="login"?"Enter password":"Create password (6+ chars)"} onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}} /></div>
+        {mode==="login"&&<p style={{ textAlign:"right", marginBottom:20 }}><span style={{ color:gold, fontSize:12, cursor:"pointer", fontFamily:"'EB Garamond', serif" }} onClick={handleResetPassword}>Forgot password?</span></p>}
+
+        <button onClick={handleSubmit} disabled={loading} style={{ ...btnPrimary, width:"100%", padding:14, opacity:loading?0.6:1 }}>
+          {loading ? "Please wait..." : mode==="login" ? "Enter ShelfLife" : "Begin Collecting"}
+        </button>
+
+        <p style={{ textAlign:"center", marginTop:16, fontSize:13, color:"#555" }}>{mode==="login"?"Don't have an account? ":"Already have an account? "}<span onClick={()=>{onSwitch();setError("");setResetSent(false);}} style={{ color:gold, cursor:"pointer" }}>{mode==="login"?"Sign up":"Sign in"}</span></p>
         <p onClick={onBack} style={{ color:"#333", fontSize:13, textAlign:"center", marginTop:12, cursor:"pointer" }}>Back to home</p>
       </div>
     </div>
@@ -999,7 +1050,7 @@ function SettingsRow({ label, value, onClick }) {
   );
 }
 
-function ProfilePage({ books, wishlist, setPage, onLogout, darkMode, setDarkMode, t }) {
+function ProfilePage({ books, wishlist, setPage, onLogout, darkMode, setDarkMode, t, user }) {
   const tv=books.reduce((s,b)=>s+(Number(b.currentValue)||0),0); const tp=books.reduce((s,b)=>s+(Number(b.purchasePrice)||0),0);
   const pubC={}; books.forEach(b=>{if(b.publisher)pubC[b.publisher]=(pubC[b.publisher]||0)+1;}); const topP=Object.entries(pubC).sort((a,b)=>b[1]-a[1]).slice(0,5);
   const edC={}; books.forEach(b=>{if(b.editionType)edC[b.editionType]=(edC[b.editionType]||0)+1;}); const topE=Object.entries(edC).sort((a,b)=>b[1]-a[1]).slice(0,5);
@@ -1019,8 +1070,8 @@ function ProfilePage({ books, wishlist, setPage, onLogout, darkMode, setDarkMode
     </div>
 
     <SH title="Account" />
-    <SettingsRow label="Display Name" value="ShelfLife Member" onClick={()=>alert("Edit name (Demo)")} />
-    <SettingsRow label="Email" value="v***@email.com" onClick={()=>alert("Change email (Demo)")} />
+    <SettingsRow label="Display Name" value={user?.user_metadata?.display_name || "ShelfLife Member"} onClick={()=>alert("Edit name (Demo)")} />
+    <SettingsRow label="Email" value={user?.email || ""} onClick={()=>alert("Change email (Demo)")} />
     <SettingsRow label="Password" value="••••••••" onClick={()=>alert("Change password (Demo)")} />
     <SettingsRow label="Plan" value="Free" onClick={()=>alert("Upgrade to Pro! (Demo)")} />
 
@@ -1058,8 +1109,8 @@ function ProfilePage({ books, wishlist, setPage, onLogout, darkMode, setDarkMode
       <button onClick={()=>setShowSettings(true)} style={{ ...btnSmall, fontSize:10, padding:"5px 12px", color:"#666" }}>Settings</button>
     </div>
     <div style={{ textAlign:"center", marginBottom:28 }}>
-      <div style={{ width:70, height:70, borderRadius:"50%", background:`${gold}15`, border:`2px solid ${gold}30`, display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 10px", fontSize:24, color:gold }}>V</div>
-      <h2 style={{ fontFamily:"'Cinzel', serif", fontSize:22, color:"#e0d6c8", margin:"0 0 6px" }}>ShelfLife Member</h2>
+      <div style={{ width:70, height:70, borderRadius:"50%", background:`${gold}15`, border:`2px solid ${gold}30`, display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 10px", fontSize:24, color:gold }}>{(user?.user_metadata?.display_name || user?.email || "S")[0].toUpperCase()}</div>
+      <h2 style={{ fontFamily:"'Cinzel', serif", fontSize:22, color:"#e0d6c8", margin:"0 0 6px" }}>{user?.user_metadata?.display_name || "ShelfLife Member"}</h2>
       <TierBadge tier={tier} />
     </div>
 
@@ -1142,7 +1193,7 @@ function getTheme(dark) {
 }
 
 export default function App() {
-  const [appState, setAppState] = useState("public");
+  const [appState, setAppState] = useState("loading"); // loading | public | auth | app
   const [authMode, setAuthMode] = useState("login");
   const [page, setPage] = useState("home");
   const [books, setBooks] = useState(MY_BOOKS);
@@ -1150,7 +1201,60 @@ export default function App() {
   const [wishlist, setWishlist] = useState([]);
   const [viewingCollector, setViewingCollector] = useState(null);
   const [darkMode, setDarkMode] = useState(true);
+  const [user, setUser] = useState(null);
   const t = getTheme(darkMode);
+
+  // Check for existing session on load
+  useEffect(() => {
+    const checkSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        setUser(session.user);
+        setAppState("app");
+      } else {
+        setAppState("public");
+      }
+    };
+    checkSession();
+
+    // Listen for auth changes (login, logout, token refresh)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (event === "SIGNED_IN" && session?.user) {
+          setUser(session.user);
+          setAppState("app");
+          setPage("home");
+        } else if (event === "SIGNED_OUT") {
+          setUser(null);
+          setAppState("public");
+          setPage("home");
+        }
+      }
+    );
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+    setAppState("public");
+    setPage("home");
+    setBooks(MY_BOOKS);
+    setWishlist([]);
+  };
+
+  // Loading screen while checking session
+  if (appState === "loading") return (
+    <div style={{ minHeight:"100vh", background:`radial-gradient(ellipse at 50% 30%, #1a1510 0%, #0a0908 60%, #050505 100%)`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet" />
+      <div style={{ textAlign:"center" }}>
+        <h1 style={{ fontFamily:"'Cinzel', serif", fontSize:36, fontWeight:900, margin:"0 0 16px", background:`linear-gradient(135deg, ${gold}, #e8d5a8, ${gold})`, WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", letterSpacing:4 }}>SHELFLIFE</h1>
+        <div style={{ width:28, height:28, border:`2px solid #333`, borderTopColor:gold, borderRadius:"50%", animation:"spin 0.8s linear infinite", margin:"0 auto" }} />
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    </div>
+  );
 
   // Global style overrides based on theme
   const lm = !darkMode;
@@ -1210,7 +1314,7 @@ export default function App() {
   `;
 
   if (appState === "public") return <PublicHomePage onLogin={() => { setAuthMode("login"); setAppState("auth"); }} onSignup={() => { setAuthMode("signup"); setAppState("auth"); }} onBrowse={() => { setAppState("app"); setPage("discover"); }} />;
-  if (appState === "auth") return <AuthPage mode={authMode} onComplete={() => { setAppState("app"); setPage("home"); }} onBack={() => setAppState("public")} onSwitch={() => setAuthMode(m => m === "login" ? "signup" : "login")} />;
+  if (appState === "auth") return <AuthPage mode={authMode} onComplete={(u) => { setUser(u); setAppState("app"); setPage("home"); }} onBack={() => setAppState("public")} onSwitch={() => setAuthMode(m => m === "login" ? "signup" : "login")} />;
 
   if (viewingCollector) return (
     <div className="vault-app" style={{ minHeight:"100vh", fontFamily:"'EB Garamond', serif" }}>
@@ -1230,7 +1334,7 @@ export default function App() {
       {page === "shelf" && <ShelfPage books={books} setBooks={setBooks} modal={modal} setModal={setModal} t={t} />}
       {page === "market" && <MarketPage setModal={setModal} t={t} />}
       {page === "discover" && <DiscoverPage onViewProfile={c => setViewingCollector(c)} t={t} />}
-      {page === "profile" && <ProfilePage books={books} wishlist={wishlist} setPage={setPage} onLogout={() => { setAppState("public"); setPage("home"); }} darkMode={darkMode} setDarkMode={setDarkMode} t={t} />}
+      {page === "profile" && <ProfilePage books={books} wishlist={wishlist} setPage={setPage} onLogout={handleLogout} darkMode={darkMode} setDarkMode={setDarkMode} t={t} user={user} />}
       {page === "wishlist" && <WishlistPage wishlist={wishlist} setWishlist={setWishlist} setPage={setPage} t={t} />}
 
       {modal?.type === "report" && <Modal onClose={() => setModal(null)}><ReportSaleModal onClose={() => setModal(null)} /></Modal>}
