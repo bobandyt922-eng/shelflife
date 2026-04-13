@@ -1066,7 +1066,11 @@ function ShelfPage({ books, setBooks, modal, setModal, t, user }) {
       </Modal>}
       {modal?.type==="form"&&<Modal onClose={()=>{setModal(null);setPrefill(null);}}><BookForm book={prefill} onSave={handleSave} onCancel={()=>{setModal(null);setPrefill(null);}} /></Modal>}
       {modal?.type==="edit"&&<Modal onClose={()=>setModal(null)}><BookForm book={modal.book} isEdit onSave={handleSave} onCancel={()=>setModal(null)} /></Modal>}
-      {modal?.type==="detail"&&!confirmDel&&<Modal onClose={()=>setModal(null)}><DetailView book={modal.book} onEdit={()=>setModal({type:"edit",book:modal.book})} onDelete={()=>setConfirmDel(modal.book.id)} onClose={()=>setModal(null)} /></Modal>}
+      {modal?.type==="detail"&&!confirmDel&&<Modal onClose={()=>setModal(null)}><DetailView book={modal.book} onEdit={()=>setModal({type:"edit",book:modal.book})} onDelete={()=>setConfirmDel(modal.book.id)} onClose={()=>setModal(null)} onUpdateCover={async (bookId, url) => {
+        await dbUpdateBook(bookId, { ...modal.book, coverUrl: url });
+        setBooks(p => p.map(b => b.id === bookId ? { ...b, coverUrl: url } : b));
+        setModal(prev => prev ? { ...prev, book: { ...prev.book, coverUrl: url } } : null);
+      }} /></Modal>}
       {confirmDel&&<Modal onClose={()=>setConfirmDel(null)}><div style={{ textAlign:"center", padding:"16px 0" }}><h3 style={{ fontFamily:"'Cinzel', serif", color:gold, margin:"0 0 10px" }}>Remove?</h3><p style={{ color:"#777", marginBottom:24, fontSize:14 }}>Cannot be undone.</p><div style={{ display:"flex", gap:12, justifyContent:"center" }}><button onClick={()=>setConfirmDel(null)} style={btnGhost}>Cancel</button><button onClick={()=>handleDelete(confirmDel)} style={btnDanger}>Delete</button></div></div></Modal>}
     </div>
   );
@@ -1366,21 +1370,52 @@ function QuickReportSale({ title, edition, onDone }) {
   );
 }
 
-function DetailView({ book, onEdit, onDelete, onClose }) {
+function DetailView({ book, onEdit, onDelete, onClose, onUpdateCover }) {
   const g=book.currentValue&&book.purchasePrice?Number(book.currentValue)-Number(book.purchasePrice):null;
   const roi=g!==null&&book.purchasePrice?((g/Number(book.purchasePrice))*100).toFixed(0):null;
   const [showPriceCheck, setShowPriceCheck] = useState(false);
+  const [showCoverEdit, setShowCoverEdit] = useState(false);
+  const [coverOptions, setCoverOptions] = useState([]);
+  const [searchingCover, setSearchingCover] = useState(false);
+  const [coverUrl, setCoverUrl] = useState(book.coverUrl || "");
+
+  const searchCover = async () => {
+    setSearchingCover(true);
+    setCoverOptions([]);
+    try {
+      const titleQ = encodeURIComponent(book.title.trim());
+      const authorQ = book.author.trim() ? "&author=" + encodeURIComponent(book.author.trim()) : "";
+      const resp = await fetch(`https://openlibrary.org/search.json?title=${titleQ}${authorQ}&limit=12&fields=key,title,author_name,cover_i`);
+      const json = await resp.json();
+      const covers = (json.docs || []).filter(d => d.cover_i).map(d => ({
+        id: d.cover_i,
+        url: `https://covers.openlibrary.org/b/id/${d.cover_i}-L.jpg`,
+        thumb: `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg`,
+      }));
+      const seen = new Set();
+      setCoverOptions(covers.filter(c => { if (seen.has(c.id)) return false; seen.add(c.id); return true; }));
+    } catch (e) { console.log("Cover search failed"); }
+    setSearchingCover(false);
+  };
+
+  const saveCover = async (url) => {
+    setCoverUrl(url);
+    if (onUpdateCover) await onUpdateCover(book.id, url);
+  };
 
   return (<div>
     <div style={{ display:"flex", justifyContent:"space-between", marginBottom:14 }}>
       <div style={{ display:"flex", gap:14, flex:1 }}>
-        {/* Cover Image */}
-        <div style={{ width:80, height:110, borderRadius:4, border:`1px solid ${borderClr}`, background:"#111", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, overflow:"hidden" }}>
-          {book.coverUrl ? (
-            <img src={book.coverUrl} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} />
+        {/* Cover Image - tap to change */}
+        <div onClick={()=>setShowCoverEdit(!showCoverEdit)} style={{ width:80, height:110, borderRadius:4, border:`1px solid ${borderClr}`, background:"#111", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, overflow:"hidden", cursor:"pointer", position:"relative" }}>
+          {coverUrl ? (
+            <img src={coverUrl} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} />
           ) : (
             <span style={{ fontSize:9, color:"#333" }}>NO COVER</span>
           )}
+          <div style={{ position:"absolute", bottom:0, left:0, right:0, background:"rgba(0,0,0,0.7)", padding:"2px 0", textAlign:"center" }}>
+            <span style={{ fontSize:8, color:gold, fontFamily:"'Cinzel', serif" }}>{coverUrl ? "CHANGE" : "ADD"}</span>
+          </div>
         </div>
         <div>
           <h2 style={{ fontFamily:"'Cinzel', serif", color:"#e0d6c8", margin:0, fontSize:20 }}>{book.title}</h2>
@@ -1389,6 +1424,34 @@ function DetailView({ book, onEdit, onDelete, onClose }) {
       </div>
       <button onClick={onClose} style={{ background:"none", border:"none", color:"#444", fontSize:18, cursor:"pointer", alignSelf:"flex-start" }}>X</button>
     </div>
+
+    {/* Quick Cover Editor */}
+    {showCoverEdit && (
+      <div style={{ background:"#0f0f0f", borderRadius:8, padding:14, marginBottom:14, border:`1px solid ${borderClr}` }}>
+        <div style={{ display:"flex", gap:8, marginBottom:10, alignItems:"center" }}>
+          <input style={{ ...inputBase, flex:1, fontSize:12, padding:"8px 10px" }} placeholder="Paste cover image URL..." value={coverUrl} onChange={e=>setCoverUrl(e.target.value)} />
+          <button onClick={()=>saveCover(coverUrl)} style={{ ...btnSmall, color:gold, borderColor:`${gold}40`, fontSize:10, padding:"6px 10px", whiteSpace:"nowrap" }}>Save</button>
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:8 }}>
+          <button onClick={searchCover} disabled={searchingCover} style={{ ...btnSmall, color:gold, borderColor:`${gold}40`, fontSize:10, padding:"4px 10px" }}>
+            {searchingCover ? "Searching..." : "Find Cover"}
+          </button>
+          {coverUrl && <button onClick={()=>saveCover("")} style={{ ...btnSmall, color:"#666", fontSize:10, padding:"4px 10px" }}>Remove Cover</button>}
+        </div>
+        {coverOptions.length > 0 && (
+          <div style={{ display:"flex", gap:6, overflowX:"auto", paddingBottom:4 }}>
+            {coverOptions.map((c, i) => (
+              <div key={i} onClick={()=>saveCover(c.url)} style={{
+                width:50, height:70, borderRadius:3, overflow:"hidden", cursor:"pointer", flexShrink:0,
+                border: coverUrl === c.url ? `2px solid ${gold}` : "1px solid #333",
+              }}>
+                <img src={c.thumb} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    )}
     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>{[["Publisher",book.publisher],["Edition",book.editionType],["Limitation",book.limitation],["Condition",book.condition],["Added",book.dateAdded]].map(([l,v])=>v?<div key={l}><div style={labelBase}>{l}</div><div style={{ color:"#e0d6c8", fontSize:13 }}>{v}</div></div>:null)}</div>
     {(book.purchasePrice||book.currentValue)&&<div style={{ background:"#111", borderRadius:8, padding:14, marginBottom:14, border:`1px solid ${borderClr}` }}><div style={labelBase}>Financials</div><div style={{ display:"flex", gap:20, marginTop:6, flexWrap:"wrap" }}>{book.purchasePrice&&<div><div style={{ color:"#444", fontSize:9 }}>Paid</div><div style={{ color:"#ccc", fontSize:18, fontFamily:"'Cinzel', serif" }}>${Number(book.purchasePrice).toLocaleString()}</div></div>}{book.currentValue&&<div><div style={{ color:"#444", fontSize:9 }}>Value</div><div style={{ color:gold, fontSize:18, fontFamily:"'Cinzel', serif" }}>${Number(book.currentValue).toLocaleString()}</div></div>}{g!==null&&<div><div style={{ color:"#444", fontSize:9 }}>Gain</div><div style={{ color:g>=0?"#6a6":"#c66", fontSize:18, fontFamily:"'Cinzel', serif" }}>{g>=0?"+":""}${g.toLocaleString()} {roi&&<span style={{ fontSize:11, opacity:0.6 }}>({roi}%)</span>}</div></div>}</div></div>}
 
