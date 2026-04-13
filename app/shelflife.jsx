@@ -256,6 +256,45 @@ async function dbSendContactMessage(userId, name, email, topic, message) {
   return true;
 }
 
+/* Price Reports DB functions */
+async function dbReportSale(userId, report) {
+  const { error } = await supabase
+    .from("price_reports")
+    .insert({
+      reported_by: userId || null,
+      title: report.title,
+      author: report.author || null,
+      publisher: report.publisher || null,
+      edition_type: report.edition || null,
+      sale_price: Number(report.price),
+      sale_source: report.source || "eBay",
+      condition: report.condition || null,
+      notes: report.notes || null,
+    });
+  if (error) { console.error("Report sale error:", error); return false; }
+  return true;
+}
+
+async function dbGetPriceReports(title) {
+  const { data, error } = await supabase
+    .from("price_reports")
+    .select("*, profiles:reported_by(display_name)")
+    .ilike("title", `%${title}%`)
+    .order("created_at", { ascending: false })
+    .limit(20);
+  if (error) { console.error("Get price reports error:", error); return []; }
+  return (data || []).map(row => ({
+    price: Number(row.sale_price),
+    source: row.sale_source || "Unknown",
+    condition: row.condition || "",
+    edition: row.edition_type || "",
+    publisher: row.publisher || "",
+    notes: row.notes || "",
+    user: row.profiles?.display_name || "Anonymous",
+    date: new Date(row.created_at).toLocaleDateString("en-US", { month:"short", day:"numeric", year:"numeric" }),
+  }));
+}
+
 async function dbSearchBooks(query) {
   const q = query.toLowerCase().trim();
   if (q.length < 2) return [];
@@ -1066,7 +1105,7 @@ function ShelfPage({ books, setBooks, modal, setModal, t, user }) {
       </Modal>}
       {modal?.type==="form"&&<Modal onClose={()=>{setModal(null);setPrefill(null);}}><BookForm book={prefill} onSave={handleSave} onCancel={()=>{setModal(null);setPrefill(null);}} /></Modal>}
       {modal?.type==="edit"&&<Modal onClose={()=>setModal(null)}><BookForm book={modal.book} isEdit onSave={handleSave} onCancel={()=>setModal(null)} /></Modal>}
-      {modal?.type==="detail"&&!confirmDel&&<Modal onClose={()=>setModal(null)}><DetailView book={modal.book} onEdit={()=>setModal({type:"edit",book:modal.book})} onDelete={()=>setConfirmDel(modal.book.id)} onClose={()=>setModal(null)} onUpdateCover={async (bookId, url) => {
+      {modal?.type==="detail"&&!confirmDel&&<Modal onClose={()=>setModal(null)}><DetailView book={modal.book} user={user} onEdit={()=>setModal({type:"edit",book:modal.book})} onDelete={()=>setConfirmDel(modal.book.id)} onClose={()=>setModal(null)} onUpdateCover={async (bookId, url) => {
         await dbUpdateBook(bookId, { ...modal.book, coverUrl: url });
         setBooks(p => p.map(b => b.id === bookId ? { ...b, coverUrl: url } : b));
         setModal(prev => prev ? { ...prev, book: { ...prev.book, coverUrl: url } } : null);
@@ -1201,61 +1240,34 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
   </div>);
 }
 
-function generateMockPriceData(title, edition) {
-  let h = 0; for (let i = 0; i < (title+edition).length; i++) h = ((h << 5) - h + (title+edition).charCodeAt(i)) | 0;
-  h = Math.abs(h);
-  const base = 100 + (h % 900);
-  const variance = () => Math.round(base * (0.8 + Math.random() * 0.5));
-  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const randDate = (daysAgo) => { const d=new Date(); d.setDate(d.getDate()-daysAgo); return `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`; };
-  return {
-    ebay: [
-      { price: variance(), date: randDate(3 + (h%5)), condition: "Near Mint" },
-      { price: variance(), date: randDate(12 + (h%8)), condition: "Fine" },
-      { price: variance(), date: randDate(25 + (h%10)), condition: "Mint" },
-      { price: variance(), date: randDate(40 + (h%15)), condition: "Very Good" },
-      { price: variance(), date: randDate(55 + (h%12)), condition: "Near Mint" },
-    ].sort((a,b) => new Date(b.date) - new Date(a.date)),
-    abebooks: [
-      { price: Math.round(base * 1.2), condition: "Fine", seller: "RareBookDealer" },
-      { price: Math.round(base * 1.4), condition: "Mint", seller: "CollectorShelf" },
-      { price: Math.round(base * 0.95), condition: "Very Good", seller: "DarkFictionBooks" },
-    ],
-    community: [
-      { price: variance(), user: "DarkShelfCollector", date: randDate(5 + (h%7)), notes: "Private sale" },
-      { price: variance(), user: "GrailHunter", date: randDate(20 + (h%10)), notes: "Facebook group" },
-      { price: variance(), user: "NightShade_Reader", date: randDate(45 + (h%15)), notes: "Purchased from publisher" },
-    ],
-  };
-}
-
-function PriceCheckPanel({ title, edition, onClose, onReportSale }) {
+function PriceCheckPanel({ title, edition, onClose, user }) {
   const [loading, setLoading] = useState(true);
-  const [data, setData] = useState(null);
+  const [communityData, setCommunityData] = useState([]);
   const [showReport, setShowReport] = useState(false);
 
-  useState(() => {
-    setTimeout(() => {
-      setData(generateMockPriceData(title, edition || ""));
+  useEffect(() => {
+    const load = async () => {
+      const reports = await dbGetPriceReports(title);
+      setCommunityData(reports);
       setLoading(false);
-    }, 1500);
-  });
+    };
+    load();
+  }, [title]);
 
   if (loading) return (
     <div style={{ padding: "40px 0", textAlign: "center" }}>
       <div style={{ width: 28, height: 28, border: `2px solid #333`, borderTopColor: gold, borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 16px" }} />
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       <p style={{ fontFamily: "'Cinzel', serif", fontSize: 13, color: gold, letterSpacing: 1 }}>Checking prices...</p>
-      <p style={{ fontSize: 11, color: "#555", fontStyle: "italic" }}>Scanning eBay, AbeBooks, and community data</p>
+      <p style={{ fontSize: 11, color: "#555", fontStyle: "italic" }}>Scanning community data</p>
     </div>
   );
 
-  if (!data) return null;
-
-  const allPrices = [...data.ebay.map(e=>e.price), ...data.community.map(c=>c.price)];
-  const avg = Math.round(allPrices.reduce((a,b)=>a+b,0) / allPrices.length);
-  const low = Math.min(...allPrices);
-  const high = Math.max(...allPrices);
+  const allPrices = communityData.map(c => c.price);
+  const hasData = allPrices.length > 0;
+  const avg = hasData ? Math.round(allPrices.reduce((a,b)=>a+b,0) / allPrices.length) : 0;
+  const low = hasData ? Math.min(...allPrices) : 0;
+  const high = hasData ? Math.max(...allPrices) : 0;
 
   return (
     <div>
@@ -1268,66 +1280,48 @@ function PriceCheckPanel({ title, edition, onClose, onReportSale }) {
       </div>
 
       {/* Estimated Value */}
-      <div style={{ background:"linear-gradient(135deg, #1a1510, #111)", border:`1px solid ${gold}25`, borderRadius:10, padding:"18px 20px", marginBottom:16, textAlign:"center" }}>
-        <div style={{ fontSize:9, color:gold, textTransform:"uppercase", letterSpacing:2, fontFamily:"'Cinzel', serif", marginBottom:6 }}>Estimated Value</div>
-        <div style={{ fontSize:36, fontFamily:"'Cinzel', serif", color:gold }}>${avg.toLocaleString()}</div>
-        <div style={{ fontSize:12, color:"#666", marginTop:4 }}>Range: ${low.toLocaleString()} — ${high.toLocaleString()}</div>
-        <div style={{ fontSize:10, color:"#444", marginTop:4 }}>Based on {allPrices.length} data points (eBay sold + community reports)</div>
-      </div>
-
-      {/* eBay Sold Listings */}
-      <div style={{ marginBottom:16 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-          <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>eBay Sold</div>
-          <span style={{ fontSize:10, color:"#444" }}>Last {data.ebay.length} sales</span>
+      {hasData ? (
+        <div style={{ background:"linear-gradient(135deg, #1a1510, #111)", border:`1px solid ${gold}25`, borderRadius:10, padding:"18px 20px", marginBottom:16, textAlign:"center" }}>
+          <div style={{ fontSize:9, color:gold, textTransform:"uppercase", letterSpacing:2, fontFamily:"'Cinzel', serif", marginBottom:6 }}>Estimated Value</div>
+          <div style={{ fontSize:36, fontFamily:"'Cinzel', serif", color:gold }}>${avg.toLocaleString()}</div>
+          <div style={{ fontSize:12, color:"#666", marginTop:4 }}>Range: ${low.toLocaleString()} — ${high.toLocaleString()}</div>
+          <div style={{ fontSize:10, color:"#444", marginTop:4 }}>Based on {allPrices.length} community report{allPrices.length !== 1 ? "s" : ""}</div>
         </div>
-        {data.ebay.map((e,i)=>(
-          <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 12px", background:i%2===0?"#0f0f0f":"transparent", borderRadius:4, fontSize:12 }}>
-            <div>
-              <span style={{ color:"#e0d6c8", fontFamily:"'Cinzel', serif" }}>${e.price.toLocaleString()}</span>
-              <span style={{ color:"#444", marginLeft:8, fontSize:10 }}>{e.condition}</span>
-            </div>
-            <span style={{ color:"#444", fontSize:10 }}>{e.date}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* AbeBooks Current Listings */}
-      <div style={{ marginBottom:16 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-          <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>AbeBooks Listings</div>
-          <span style={{ fontSize:10, color:"#444" }}>Current asking prices</span>
+      ) : (
+        <div style={{ background:"linear-gradient(135deg, #1a1510, #111)", border:`1px solid ${borderClr}`, borderRadius:10, padding:"18px 20px", marginBottom:16, textAlign:"center" }}>
+          <div style={{ fontSize:9, color:"#555", textTransform:"uppercase", letterSpacing:2, fontFamily:"'Cinzel', serif", marginBottom:6 }}>No Price Data Yet</div>
+          <p style={{ color:"#666", fontSize:13, margin:"8px 0 0" }}>Be the first to report a sale for this book.</p>
         </div>
-        {data.abebooks.map((a,i)=>(
-          <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 12px", background:i%2===0?"#0f0f0f":"transparent", borderRadius:4, fontSize:12 }}>
-            <div>
-              <span style={{ color:"#e0d6c8", fontFamily:"'Cinzel', serif" }}>${a.price.toLocaleString()}</span>
-              <span style={{ color:"#444", marginLeft:8, fontSize:10 }}>{a.condition}</span>
-            </div>
-            <span style={{ color:"#555", fontSize:10 }}>{a.seller}</span>
-          </div>
-        ))}
-        <p style={{ fontSize:10, color:"#444", fontStyle:"italic", margin:"6px 0 0" }}>Note: Asking prices, not sold. May be higher than actual market value.</p>
-      </div>
+      )}
 
-      {/* Community Reported */}
-      <div style={{ marginBottom:16 }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-          <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Community Reported</div>
-          <span style={{ fontSize:10, color:"#444" }}>ShelfLife user data</span>
-        </div>
-        {data.community.map((c,i)=>(
-          <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 12px", background:i%2===0?"#0f0f0f":"transparent", borderRadius:4, fontSize:12 }}>
-            <div>
-              <span style={{ color:"#e0d6c8", fontFamily:"'Cinzel', serif" }}>${c.price.toLocaleString()}</span>
-              <span style={{ color:"#444", marginLeft:8, fontSize:10 }}>{c.notes}</span>
-            </div>
-            <div style={{ textAlign:"right" }}>
-              <div style={{ color:gold, fontSize:10 }}>{c.user}</div>
-              <div style={{ color:"#333", fontSize:9 }}>{c.date}</div>
-            </div>
+      {/* Community Reported Sales */}
+      {communityData.length > 0 && (
+        <div style={{ marginBottom:16 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+            <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Community Reported</div>
+            <span style={{ fontSize:10, color:"#444" }}>{communityData.length} sale{communityData.length !== 1 ? "s" : ""}</span>
           </div>
-        ))}
+          {communityData.map((c,i)=>(
+            <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 12px", background:i%2===0?"#0f0f0f":"transparent", borderRadius:4, fontSize:12, marginBottom:2 }}>
+              <div>
+                <span style={{ color:"#e0d6c8", fontFamily:"'Cinzel', serif", fontSize:14 }}>${c.price.toLocaleString()}</span>
+                {c.condition && <span style={{ color:"#555", marginLeft:8, fontSize:10 }}>{c.condition}</span>}
+                {c.edition && <span style={{ color:"#444", marginLeft:6, fontSize:10 }}>· {c.edition}</span>}
+                {c.publisher && <span style={{ color:"#444", marginLeft:6, fontSize:10 }}>· {c.publisher}</span>}
+              </div>
+              <div style={{ textAlign:"right" }}>
+                <div style={{ color:gold, fontSize:10 }}>{c.user}</div>
+                <div style={{ color:"#444", fontSize:9 }}>{c.source} · {c.date}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* eBay & AbeBooks placeholder */}
+      <div style={{ background:"#0f0f0f", borderRadius:8, padding:14, marginBottom:16, border:`1px solid ${borderClr}`, textAlign:"center" }}>
+        <div style={{ fontSize:11, color:"#444", fontFamily:"'Cinzel', serif", letterSpacing:1, marginBottom:4 }}>eBay & AbeBooks Data</div>
+        <p style={{ color:"#555", fontSize:12, margin:0 }}>Live marketplace pricing coming soon</p>
       </div>
 
       {/* Report a Sale Button */}
@@ -1337,14 +1331,20 @@ function PriceCheckPanel({ title, edition, onClose, onReportSale }) {
           <button onClick={()=>setShowReport(true)} style={{ ...btnSmall, color:gold, borderColor:`${gold}40` }}>Report a Sale Price</button>
         </div>
       ) : (
-        <QuickReportSale title={title} edition={edition} onDone={()=>setShowReport(false)} />
+        <QuickReportSale title={title} edition={edition} user={user} onDone={(reported)=>{
+          setShowReport(false);
+          if (reported) {
+            // Refresh the data
+            dbGetPriceReports(title).then(r => setCommunityData(r));
+          }
+        }} />
       )}
     </div>
   );
 }
 
-function QuickReportSale({ title, edition, onDone }) {
-  const [price,setPrice]=useState(""); const [source,setSource]=useState("eBay"); const [condition,setCond]=useState("Fine"); const [notes,setNotes]=useState(""); const [submitted,setSubmitted]=useState(false);
+function QuickReportSale({ title, edition, onDone, user }) {
+  const [price,setPrice]=useState(""); const [source,setSource]=useState("eBay"); const [condition,setCond]=useState("Fine"); const [notes,setNotes]=useState(""); const [submitted,setSubmitted]=useState(false); const [saving,setSaving]=useState(false);
 
   if (submitted) return (
     <div style={{ background:"#0f0f0f", borderRadius:8, padding:16, textAlign:"center", border:`1px solid ${borderClr}` }}>
@@ -1352,6 +1352,14 @@ function QuickReportSale({ title, edition, onDone }) {
       <p style={{ color:"#555", fontSize:11 }}>Your data helps the community get accurate valuations.</p>
     </div>
   );
+
+  const handleSubmit = async () => {
+    if (!price) return;
+    setSaving(true);
+    const ok = await dbReportSale(user?.id, { title, edition, price, source, condition, notes });
+    setSaving(false);
+    if (ok) { setSubmitted(true); setTimeout(() => onDone(true), 2000); }
+  };
 
   return (
     <div style={{ background:"#0f0f0f", borderRadius:8, padding:16, border:`1px solid ${borderClr}` }}>
@@ -1363,14 +1371,14 @@ function QuickReportSale({ title, edition, onDone }) {
         <div><label style={labelBase}>Notes</label><input style={{ ...inputBase, fontSize:12, padding:"8px 10px" }} value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Optional" /></div>
       </div>
       <div style={{ display:"flex", gap:8, marginTop:12, justifyContent:"flex-end" }}>
-        <button onClick={onDone} style={{ ...btnSmall, fontSize:10 }}>Cancel</button>
-        <button onClick={()=>{if(price)setSubmitted(true);}} style={{ ...btnPrimary, padding:"6px 16px", fontSize:10, opacity:price?1:0.4 }}>Submit</button>
+        <button onClick={()=>onDone(false)} style={{ ...btnSmall, fontSize:10 }}>Cancel</button>
+        <button onClick={handleSubmit} disabled={saving} style={{ ...btnPrimary, padding:"6px 16px", fontSize:10, opacity:(price&&!saving)?1:0.4 }}>{saving?"Saving...":"Submit"}</button>
       </div>
     </div>
   );
 }
 
-function DetailView({ book, onEdit, onDelete, onClose, onUpdateCover }) {
+function DetailView({ book, onEdit, onDelete, onClose, onUpdateCover, user }) {
   const g=book.currentValue&&book.purchasePrice?Number(book.currentValue)-Number(book.purchasePrice):null;
   const roi=g!==null&&book.purchasePrice?((g/Number(book.purchasePrice))*100).toFixed(0):null;
   const [showPriceCheck, setShowPriceCheck] = useState(false);
@@ -1462,7 +1470,7 @@ function DetailView({ book, onEdit, onDelete, onClose, onUpdateCover }) {
       </button>
     ) : (
       <div style={{ marginBottom:14, border:`1px solid ${borderClr}`, borderRadius:10, padding:16, background:"#0a0a0a" }}>
-        <PriceCheckPanel title={book.title} edition={book.editionType} onClose={()=>setShowPriceCheck(false)} />
+        <PriceCheckPanel title={book.title} edition={book.editionType} onClose={()=>setShowPriceCheck(false)} user={user} />
       </div>
     )}
 
@@ -1474,7 +1482,7 @@ function DetailView({ book, onEdit, onDelete, onClose, onUpdateCover }) {
 /* ═══════════════════════════════════════════
    MARKET PAGE
    ═══════════════════════════════════════════ */
-function MarketPage({ setModal }) {
+function MarketPage({ setModal, t, user }) {
   const [priceSearch, setPriceSearch] = useState("");
   const [priceCheckBook, setPriceCheckBook] = useState(null);
   const [searchResults, setSearchResults] = useState([]);
@@ -1513,7 +1521,7 @@ function MarketPage({ setModal }) {
     {/* Price Check Results */}
     {priceCheckBook && (
       <div style={{ marginBottom:20, border:`1px solid ${borderClr}`, borderRadius:10, padding:16, background:"#0a0a0a" }}>
-        <PriceCheckPanel title={priceCheckBook.title} edition="" onClose={()=>setPriceCheckBook(null)} />
+        <PriceCheckPanel title={priceCheckBook.title} edition="" onClose={()=>setPriceCheckBook(null)} user={user} />
       </div>
     )}
 
@@ -1530,21 +1538,35 @@ function MarketPage({ setModal }) {
   </div>);
 }
 
-function ReportSaleModal({ onClose }) {
-  const [f,setF]=useState({title:"",publisher:"",edition:"",price:"",source:"eBay",notes:""});
+function ReportSaleModal({ onClose, user }) {
+  const [f,setF]=useState({title:"",publisher:"",edition:"",price:"",source:"eBay",condition:"Fine",notes:""});
   const s=(k,v)=>setF(p=>({...p,[k]:v}));
+  const [saving,setSaving]=useState(false);
+  const [saved,setSaved]=useState(false);
+
+  const handleSubmit = async () => {
+    if (!f.title.trim() || !f.price) return;
+    setSaving(true);
+    const ok = await dbReportSale(user?.id, f);
+    setSaving(false);
+    if (ok) { setSaved(true); setTimeout(onClose, 1500); }
+  };
+
+  if (saved) return (<div style={{ textAlign:"center", padding:"32px 0" }}><div style={{ color:"#6a6", fontSize:16, marginBottom:8 }}>Sale reported!</div><p style={{ color:"#555", fontSize:13 }}>Thank you for contributing to the community.</p></div>);
+
   return (<div>
     <h2 style={{ fontFamily:"'Cinzel', serif", color:gold, margin:"0 0 16px", fontSize:18 }}>Report a Sale</h2>
     <p style={{ color:"#666", fontSize:12, margin:"0 0 14px" }}>Help build the pricing database. Report sales you've seen or made.</p>
     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-      <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Book Title</label><input style={inputBase} value={f.title} onChange={e=>s("title",e.target.value)} placeholder="e.g. The Stand" /></div>
+      <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Book Title *</label><input style={inputBase} value={f.title} onChange={e=>s("title",e.target.value)} placeholder="e.g. The Stand" /></div>
       <div><label style={labelBase}>Publisher</label><input style={inputBase} value={f.publisher} onChange={e=>s("publisher",e.target.value)} placeholder="e.g. Cemetery Dance" /></div>
       <div><label style={labelBase}>Edition</label><input style={inputBase} value={f.edition} onChange={e=>s("edition",e.target.value)} placeholder="e.g. Lettered" /></div>
-      <div><label style={labelBase}>Sale Price ($)</label><input style={inputBase} type="number" value={f.price} onChange={e=>s("price",e.target.value)} /></div>
+      <div><label style={labelBase}>Sale Price ($) *</label><input style={inputBase} type="number" value={f.price} onChange={e=>s("price",e.target.value)} /></div>
       <div><label style={labelBase}>Source</label><select style={selectBase} value={f.source} onChange={e=>s("source",e.target.value)}><option>eBay</option><option>AbeBooks</option><option>Private Sale</option><option>Facebook Group</option><option>Forum</option><option>Other</option></select></div>
-      <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Notes</label><input style={inputBase} value={f.notes} onChange={e=>s("notes",e.target.value)} placeholder="Condition, details..." /></div>
+      <div><label style={labelBase}>Condition</label><select style={selectBase} value={f.condition} onChange={e=>s("condition",e.target.value)}>{CONDITIONS.map(c=><option key={c}>{c}</option>)}</select></div>
+      <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Notes</label><input style={inputBase} value={f.notes} onChange={e=>s("notes",e.target.value)} placeholder="Details..." /></div>
     </div>
-    <div style={{ display:"flex", gap:12, marginTop:16, justifyContent:"flex-end" }}><button onClick={onClose} style={btnGhost}>Cancel</button><button onClick={onClose} style={{ ...btnPrimary, padding:"10px 20px", fontSize:12 }}>Submit</button></div>
+    <div style={{ display:"flex", gap:12, marginTop:16, justifyContent:"flex-end" }}><button onClick={onClose} style={btnGhost}>Cancel</button><button onClick={handleSubmit} disabled={saving} style={{ ...btnPrimary, padding:"10px 20px", fontSize:12, opacity:(f.title.trim()&&f.price&&!saving)?1:0.4 }}>{saving?"Saving...":"Submit"}</button></div>
   </div>);
 }
 
@@ -2023,12 +2045,12 @@ export default function App() {
       {page === "home" && <HomePage books={books} setPage={setPage} t={t} user={user} setBooks={setBooks} setModal={setModal} />}
       {page === "search" && <SearchPage onBack={()=>setPage("home")} user={user} setBooks={setBooks} />}
       {page === "shelf" && <ShelfPage books={books} setBooks={setBooks} modal={modal} setModal={setModal} t={t} user={user} />}
-      {page === "market" && <MarketPage setModal={setModal} t={t} />}
+      {page === "market" && <MarketPage setModal={setModal} t={t} user={user} />}
       {page === "discover" && <DiscoverPage onViewProfile={c => setViewingCollector(c)} t={t} />}
       {page === "profile" && <ProfilePage books={books} wishlist={wishlist} setPage={setPage} onLogout={handleLogout} darkMode={darkMode} setDarkMode={setDarkMode} t={t} user={user} />}
       {page === "wishlist" && <WishlistPage wishlist={wishlist} setWishlist={setWishlist} setPage={setPage} t={t} user={user} />}
 
-      {modal?.type === "report" && <Modal onClose={() => setModal(null)}><ReportSaleModal onClose={() => setModal(null)} /></Modal>}
+      {modal?.type === "report" && <Modal onClose={() => setModal(null)}><ReportSaleModal onClose={() => setModal(null)} user={user} /></Modal>}
 
       <ThemedNav page={page} setPage={setPage} t={t} />
     </div>
