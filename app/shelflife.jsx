@@ -1899,6 +1899,11 @@ export default function App() {
 
   // Check for existing session on load
   useEffect(() => {
+    // Register service worker for PWA
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+
     const checkSession = async () => {
       // Check if this is a password recovery redirect
       const hash = window.location.hash;
