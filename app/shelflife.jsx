@@ -256,6 +256,78 @@ async function dbSendContactMessage(userId, name, email, topic, message) {
   return true;
 }
 
+/* Profile settings DB functions */
+async function dbLoadProfile(userId) {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("*")
+    .eq("id", userId)
+    .single();
+  if (error) { console.error("Load profile error:", error); return null; }
+  return data;
+}
+
+async function dbUpdateProfile(userId, updates) {
+  const { error } = await supabase
+    .from("profiles")
+    .update(updates)
+    .eq("id", userId);
+  if (error) { console.error("Update profile error:", error); return false; }
+  return true;
+}
+
+/* Community activity DB function */
+async function dbGetCommunityActivity(limit = 10) {
+  const { data, error } = await supabase
+    .from("community_activity")
+    .select("*, profiles:user_id(display_name)")
+    .eq("is_public", true)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) { console.error("Community activity error:", error); return []; }
+  return (data || []).map(row => {
+    const mins = Math.floor((Date.now() - new Date(row.created_at).getTime()) / 60000);
+    const timeAgo = mins < 60 ? `${mins} min ago` : mins < 1440 ? `${Math.floor(mins/60)} hr ago` : `${Math.floor(mins/1440)} day ago`;
+    return {
+      user: row.profiles?.display_name || "Anonymous",
+      title: row.title || "",
+      detail: row.detail || "",
+      time: timeAgo,
+    };
+  });
+}
+
+/* Recent price reports for market feed */
+async function dbGetRecentPriceReports(limit = 5) {
+  const { data, error } = await supabase
+    .from("price_reports")
+    .select("*, profiles:reported_by(display_name)")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) { console.error("Recent reports error:", error); return []; }
+  return (data || []).map(row => {
+    const mins = Math.floor((Date.now() - new Date(row.created_at).getTime()) / 60000);
+    const timeAgo = mins < 60 ? `${mins} min ago` : mins < 1440 ? `${Math.floor(mins/60)} hr ago` : `${Math.floor(mins/1440)} days ago`;
+    return {
+      title: row.title, publisher: row.publisher || "", edition: row.edition_type || "",
+      price: Number(row.sale_price), source: row.sale_source || "",
+      date: timeAgo, user: row.profiles?.display_name || "Anonymous",
+    };
+  });
+}
+
+/* Check for duplicate in user collection */
+async function dbCheckDuplicate(userId, title, author) {
+  const { data } = await supabase
+    .from("user_collection")
+    .select("id")
+    .eq("user_id", userId)
+    .ilike("title", title)
+    .ilike("author", author)
+    .limit(1);
+  return (data || []).length > 0;
+}
+
 /* Price Reports DB functions */
 async function dbReportSale(userId, report) {
   const { error } = await supabase
@@ -635,9 +707,18 @@ function ResetPasswordScreen({ onDone }) {
 /* ═══════════════════════════════════════════
    HOME DASHBOARD (Logged In)
    ═══════════════════════════════════════════ */
-function HomePage({ books, setPage, t, user, setBooks, setModal }) {
+function HomePage({ books, setPage, t, user, setBooks, setModal, showToast }) {
   const tv = books.reduce((s,b)=>s+(Number(b.currentValue)||0),0);
   const top = [...books].sort((a,b)=>(Number(b.currentValue)||0)-(Number(a.currentValue)||0))[0];
+  const topHasValue = top && Number(top.currentValue) > 0;
+  const [communityFeed, setCommunityFeed] = useState([]);
+  const [marketFeed, setMarketFeed] = useState([]);
+  const recentBooks = books.slice(0, 4);
+
+  useEffect(() => {
+    dbGetCommunityActivity(5).then(setCommunityFeed);
+    dbGetRecentPriceReports(5).then(setMarketFeed);
+  }, []);
 
   return (
     <div style={{ padding:"24px 20px 100px" }}>
@@ -650,24 +731,57 @@ function HomePage({ books, setPage, t, user, setBooks, setModal }) {
         <span style={{ color:"#666", fontSize:15, fontFamily:"'EB Garamond', serif" }}>Search for a book to add...</span>
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:24 }}>
-        {[["Volumes",books.length,"#e0d6c8"],["Collection Value",tv>0?"$"+tv.toLocaleString():"—",gold]].map(([l,v,c])=>(
-          <div key={l} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:8, padding:"12px 14px" }}>
-            <div style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:2, fontFamily:"'Cinzel', serif" }}>{l}</div>
-            <div style={{ fontSize:20, fontFamily:"'Cinzel', serif", color:c, marginTop:4 }}>{v}</div>
-          </div>
-        ))}
-      </div>
+      {/* Onboarding for new users */}
+      {books.length === 0 && (
+        <div style={{ background:cardBg, border:`1px solid ${gold}25`, borderRadius:10, padding:"24px 20px", marginBottom:24, textAlign:"center" }}>
+          <div style={{ fontSize:28, marginBottom:8 }}>&#128218;</div>
+          <h3 style={{ fontFamily:"'Cinzel', serif", fontSize:16, color:"#e0d6c8", margin:"0 0 8px" }}>Welcome to ShelfLife</h3>
+          <p style={{ color:"#666", fontSize:13, margin:"0 0 16px" }}>Start building your collection. Search for a book above or browse the market below.</p>
+          <button onClick={()=>setPage("search")} style={{ ...btnPrimary, padding:"10px 24px", fontSize:12 }}>Add Your First Book</button>
+        </div>
+      )}
 
-      {top && (<div style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:24 }}>
+      {/* Stats - only show when user has books */}
+      {books.length > 0 && (
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:24 }}>
+          {[["Volumes",books.length,"#e0d6c8"],["Collection Value",tv>0?"$"+tv.toLocaleString():"—",gold]].map(([l,v,c])=>(
+            <div key={l} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:8, padding:"12px 14px" }}>
+              <div style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:2, fontFamily:"'Cinzel', serif" }}>{l}</div>
+              <div style={{ fontSize:20, fontFamily:"'Cinzel', serif", color:c, marginTop:4 }}>{v}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Most Valuable - only if top book has value */}
+      {topHasValue && (<div style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:24 }}>
         <div style={{ fontSize:9, color:gold, textTransform:"uppercase", letterSpacing:2, fontFamily:"'Cinzel', serif", marginBottom:4 }}>Most Valuable</div>
         <div style={{ fontFamily:"'Cinzel', serif", fontSize:15, color:"#e0d6c8" }}>{top.title}</div>
-        <div style={{ fontSize:12, color:"#555", fontStyle:"italic" }}>{top.author} · {top.publisher} {top.editionType}</div>
+        <div style={{ fontSize:12, color:"#555", fontStyle:"italic" }}>{top.author}{top.publisher ? ` · ${top.publisher}` : ""} {top.editionType||""}</div>
         <div style={{ fontSize:18, color:gold, fontFamily:"'Cinzel', serif", marginTop:4 }}>${Number(top.currentValue).toLocaleString()}</div>
       </div>)}
 
+      {/* Recently Added */}
+      {recentBooks.length > 0 && (<div style={{ marginBottom:24 }}>
+        <SH title="Recently Added" action={<button onClick={()=>setPage("shelf")} style={{ ...btnSmall, fontSize:9, padding:"4px 8px" }}>All</button>} />
+        {recentBooks.map(b => (
+          <div key={b.id} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:8, padding:"10px 12px", marginBottom:6, display:"flex", gap:10, alignItems:"center" }}>
+            <div style={{ width:36, height:50, borderRadius:3, background:"#111", border:`1px solid ${borderClr}`, overflow:"hidden", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
+              {b.coverUrl ? <img src={b.coverUrl} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} /> : <span style={{ fontSize:7, color:"#333" }}>N/A</span>}
+            </div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontFamily:"'Cinzel', serif", fontSize:12, color:"#e0d6c8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{b.title}</div>
+              <div style={{ fontSize:11, color:"#555", fontStyle:"italic" }}>{b.author}</div>
+            </div>
+            {b.editionType && <span style={{ fontSize:8, background:gold, color:"#111", padding:"2px 6px", borderRadius:3, fontFamily:"'Cinzel', serif", flexShrink:0 }}>{b.editionType}</span>}
+          </div>
+        ))}
+      </div>)}
+
+      {/* Market Activity - real data */}
       <SH title="Market Activity" action={<button onClick={()=>setPage("market")} style={{ ...btnSmall, fontSize:9, padding:"4px 8px" }}>All</button>} />
-      {MARKET_FEED.slice(0,3).map(m=>(<div key={m.id} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:8, padding:"12px 14px", marginBottom:8, display:"flex", justifyContent:"space-between", alignItems:"center" }}><div><div style={{ fontFamily:"'Cinzel', serif", fontSize:13, color:"#e0d6c8" }}>{m.title}</div><div style={{ fontSize:10, color:"#444" }}>{m.publisher} · {m.edition}</div></div><div style={{ textAlign:"right" }}><div style={{ fontFamily:"'Cinzel', serif", fontSize:16, color:gold }}>${m.price.toLocaleString()}</div><TrendBadge trend={m.trend} /></div></div>))}
+      {marketFeed.length > 0 ? marketFeed.slice(0,3).map((m,i)=>(<div key={i} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:8, padding:"12px 14px", marginBottom:8, display:"flex", justifyContent:"space-between", alignItems:"center" }}><div><div style={{ fontFamily:"'Cinzel', serif", fontSize:13, color:"#e0d6c8" }}>{m.title}</div><div style={{ fontSize:10, color:"#444" }}>{m.publisher}{m.edition ? ` · ${m.edition}` : ""}</div></div><div style={{ textAlign:"right" }}><div style={{ fontFamily:"'Cinzel', serif", fontSize:16, color:gold }}>${m.price.toLocaleString()}</div><div style={{ fontSize:9, color:"#444" }}>{m.date}</div></div></div>))
+      : <p style={{ color:"#444", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>No market activity yet. Be the first to report a sale.</p>}
 
       <div style={{ marginTop:24 }}>
         <SH title="New Releases" action={<button onClick={()=>setPage("discover")} style={{ ...btnSmall, fontSize:9, padding:"4px 8px" }}>All</button>} />
@@ -676,9 +790,11 @@ function HomePage({ books, setPage, t, user, setBooks, setModal }) {
         </div>
       </div>
 
+      {/* Community Activity - real data */}
       <div style={{ marginTop:24 }}>
         <SH title="Community" sub="Recent collector additions" />
-        {COMMUNITY_ACTIVITY.slice(0,4).map((a,i)=>(<div key={i} style={{ padding:"8px 0", borderBottom:`1px solid ${borderClr}`, fontSize:12 }}><span style={{ color:gold, fontFamily:"'Cinzel', serif" }}>{a.user}</span> <span style={{ color:"#444" }}>added</span> <span style={{ color:"#e0d6c8" }}>{a.title}</span> <span style={{ color:"#333" }}>· {a.edition} · {a.time}</span></div>))}
+        {communityFeed.length > 0 ? communityFeed.slice(0,4).map((a,i)=>(<div key={i} style={{ padding:"8px 0", borderBottom:`1px solid ${borderClr}`, fontSize:12 }}><span style={{ color:gold, fontFamily:"'Cinzel', serif" }}>{a.user}</span> <span style={{ color:"#444" }}>added</span> <span style={{ color:"#e0d6c8" }}>{a.title}</span> <span style={{ color:"#333" }}>· {a.detail} · {a.time}</span></div>))
+        : <p style={{ color:"#444", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>No community activity yet. Add a book to get things started!</p>}
       </div>
     </div>
   );
@@ -687,7 +803,7 @@ function HomePage({ books, setPage, t, user, setBooks, setModal }) {
 /* ═══════════════════════════════════════════
    SEARCH PAGE (Full Screen - Like Goodreads)
    ═══════════════════════════════════════════ */
-function SearchPage({ onBack, onAddBook, user, setBooks }) {
+function SearchPage({ onBack, onAddBook, user, setBooks, books, showToast }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
@@ -769,9 +885,19 @@ function SearchPage({ onBack, onAddBook, user, setBooks }) {
 
   const handleSave = async (formData) => {
     if (!user) return;
+    // Check for duplicate
+    const isDupe = await dbCheckDuplicate(user.id, formData.title, formData.author);
+    if (isDupe) {
+      if (showToast) showToast("This book is already on your shelf!", "error");
+      setShowAddForm(null);
+      return;
+    }
     setSaving(true);
     const saved = await dbAddBook(user.id, formData);
-    if (saved) setBooks(prev => [saved, ...prev]);
+    if (saved) {
+      setBooks(prev => [saved, ...prev]);
+      if (showToast) showToast(`"${saved.title}" added to your shelf!`);
+    }
     setSaving(false);
     setShowAddForm(null);
   };
@@ -1031,7 +1157,7 @@ function CoverShelfView({ books, onSelect }) {
   );
 }
 
-function ShelfPage({ books, setBooks, modal, setModal, t, user }) {
+function ShelfPage({ books, setBooks, modal, setModal, t, user, setPage, showToast }) {
   const [search,setSearch]=useState(""); const [sortBy,setSortBy]=useState("title"); const [prefill,setPrefill]=useState(null); const [confirmDel,setConfirmDel]=useState(null);
   const [viewMode, setViewMode] = useState("list"); // "list" | "shelf" | "covers"
   const [showInvestment, setShowInvestment] = useState(false);
@@ -1045,11 +1171,13 @@ function ShelfPage({ books, setBooks, modal, setModal, t, user }) {
   const handleSave = async (d) => {
     if (modal?.type === "edit") {
       const ok = await dbUpdateBook(modal.book.id, d);
-      if (ok) setBooks(p => p.map(b => b.id === modal.book.id ? { ...b, ...d } : b));
+      if (ok) { setBooks(p => p.map(b => b.id === modal.book.id ? { ...b, ...d } : b)); if(showToast) showToast("Book updated!"); }
     } else {
       if (!user) return;
+      const isDupe = await dbCheckDuplicate(user.id, d.title, d.author);
+      if (isDupe) { if(showToast) showToast("This book is already on your shelf!", "error"); setModal(null); setPrefill(null); return; }
       const saved = await dbAddBook(user.id, d);
-      if (saved) setBooks(p => [saved, ...p]);
+      if (saved) { setBooks(p => [saved, ...p]); if(showToast) showToast(`"${saved.title}" added to your shelf!`); }
     }
     setModal(null); setPrefill(null);
   };
@@ -1071,7 +1199,7 @@ function ShelfPage({ books, setBooks, modal, setModal, t, user }) {
             <button onClick={()=>setViewMode("shelf")} style={{ background:viewMode==="shelf"?gold+"20":"transparent", border:"none", color:viewMode==="shelf"?gold:"#444", padding:"5px 8px", cursor:"pointer", fontSize:11, borderLeft:`1px solid ${borderClr}` }} title="Spines">▐</button>
             <button onClick={()=>setViewMode("covers")} style={{ background:viewMode==="covers"?gold+"20":"transparent", border:"none", color:viewMode==="covers"?gold:"#444", padding:"5px 8px", cursor:"pointer", fontSize:11, borderLeft:`1px solid ${borderClr}` }} title="Covers">▦</button>
           </div>
-          <button onClick={()=>setModal({type:"search"})} style={{ ...btnPrimary, padding:"8px 16px", fontSize:11 }}>+ Add</button>
+          <button onClick={()=>setPage("search")} style={{ ...btnPrimary, padding:"8px 16px", fontSize:11 }}>+ Add</button>
         </div>
       </div>
 
@@ -1130,13 +1258,6 @@ function ShelfPage({ books, setBooks, modal, setModal, t, user }) {
       {filtered.length===0&&<p style={{ color:"#444", textAlign:"center", padding:40 }}>No books found.</p>}
       </>}
 
-      {modal?.type==="search"&&<Modal onClose={()=>{setModal(null);setPrefill(null);}}>
-        <h2 style={{ fontFamily:"'Cinzel', serif", color:gold, margin:"0 0 6px", fontSize:22 }}>Add to Shelf</h2>
-        <p style={{ color:"#666", fontSize:13, margin:"0 0 16px" }}>Search by title or author.</p>
-        <SearchBox onSelect={r=>{const coverUrl=r.coverId?`https://covers.openlibrary.org/b/id/${r.coverId}-L.jpg`:"";setPrefill({...emptyBook,title:r.title,author:r.author,coverUrl});setModal({type:"form"});}} books={books} />
-        <div style={{ textAlign:"center", marginTop:12 }}><button onClick={()=>{setPrefill(null);setModal({type:"form"});}} style={{ ...btnSmall, color:"#999" }}>+ Enter Manually</button></div>
-      </Modal>}
-      {modal?.type==="form"&&<Modal onClose={()=>{setModal(null);setPrefill(null);}}><BookForm book={prefill} onSave={handleSave} onCancel={()=>{setModal(null);setPrefill(null);}} /></Modal>}
       {modal?.type==="edit"&&<Modal onClose={()=>setModal(null)}><BookForm book={modal.book} isEdit onSave={handleSave} onCancel={()=>setModal(null)} /></Modal>}
       {modal?.type==="detail"&&!confirmDel&&<Modal onClose={()=>setModal(null)}><DetailView book={modal.book} user={user} onEdit={()=>setModal({type:"edit",book:modal.book})} onDelete={()=>setConfirmDel(modal.book.id)} onClose={()=>setModal(null)} onUpdateCover={async (bookId, url) => {
         await dbUpdateBook(bookId, { ...modal.book, coverUrl: url });
@@ -1146,47 +1267,6 @@ function ShelfPage({ books, setBooks, modal, setModal, t, user }) {
       {confirmDel&&<Modal onClose={()=>setConfirmDel(null)}><div style={{ textAlign:"center", padding:"16px 0" }}><h3 style={{ fontFamily:"'Cinzel', serif", color:gold, margin:"0 0 10px" }}>Remove?</h3><p style={{ color:"#777", marginBottom:24, fontSize:14 }}>Cannot be undone.</p><div style={{ display:"flex", gap:12, justifyContent:"center" }}><button onClick={()=>setConfirmDel(null)} style={btnGhost}>Cancel</button><button onClick={()=>handleDelete(confirmDel)} style={btnDanger}>Delete</button></div></div></Modal>}
     </div>
   );
-}
-
-function SearchBox({ onSelect, books }) {
-  const [q, setQ] = useState("");
-  const [results, setResults] = useState([]);
-  const [searching, setSearching] = useState(false);
-  const timer = useRef(null);
-
-  const doSearch = (val) => {
-    setQ(val);
-    clearTimeout(timer.current);
-    if (val.trim().length < 2) { setResults([]); return; }
-    timer.current = setTimeout(async () => {
-      setSearching(true);
-      const ql = val.toLowerCase();
-      // Check what's already on shelf
-      const shelfResults = books.filter(b => b.title.toLowerCase().includes(ql) || b.author.toLowerCase().includes(ql)).map(b => ({ title: b.title, author: b.author, year: "", src: "vault" }));
-      // Search Supabase books table
-      const dbResults = await dbSearchBooks(val);
-      // Search local BOOK_DB as fallback
-      const localResults = BOOK_DB.filter(b => b.title.toLowerCase().includes(ql) || b.author.toLowerCase().includes(ql)).map(b => ({ ...b, src: "db" }));
-      // Merge and deduplicate
-      const seen = new Set();
-      const merged = [];
-      [...shelfResults, ...dbResults, ...localResults].forEach(r => {
-        const k = (r.title + "|" + r.author).toLowerCase();
-        if (!seen.has(k)) { seen.add(k); merged.push(r); }
-      });
-      setResults(merged.slice(0, 15));
-      setSearching(false);
-    }, 400);
-  };
-
-  return (<div>
-    <div style={{ position:"relative" }}>
-      <input style={{ ...inputBase, fontSize:16, padding:"12px 14px", marginBottom:8 }} placeholder="Search by title or author..." value={q} onChange={e=>doSearch(e.target.value)} autoFocus />
-      {searching && <div style={{ position:"absolute", right:14, top:14, width:16, height:16, border:"2px solid #333", borderTopColor:gold, borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />}
-    </div>
-    {results.length>0&&<div style={{ maxHeight:300, overflowY:"auto", borderRadius:6, border:`1px solid ${borderClr}` }}>{results.map((r,i)=>(<div key={i} onClick={()=>onSelect(r)} style={{ padding:"10px 14px", cursor:"pointer", borderBottom:`1px solid ${borderClr}` }} onMouseEnter={e=>{e.currentTarget.style.background="#1a1a1a";}} onMouseLeave={e=>{e.currentTarget.style.background="transparent";}}><div style={{ fontFamily:"'Cinzel', serif", fontSize:13, color:"#e0d6c8" }}>{r.title}</div><div style={{ fontSize:12, color:"#666", fontStyle:"italic" }}>{r.author}{r.year&&` (${r.year})`}</div>{r.src==="vault"&&<span style={{ fontSize:9, color:gold }}>ON SHELF</span>}</div>))}</div>}
-    {q.trim().length>=2&&!searching&&results.length===0&&<p style={{ color:"#555", textAlign:"center", padding:16, fontSize:13 }}>No results found.</p>}
-  </div>);
 }
 
 function BookForm({ book, onSave, onCancel, isEdit }) {
@@ -1609,6 +1689,9 @@ function ReportSaleModal({ onClose, user }) {
 function DiscoverPage({ onViewProfile }) {
   const [collectorSearch, setCollectorSearch] = useState("");
   const [showAllCollectors, setShowAllCollectors] = useState(false);
+  const [communityFeed, setCommunityFeed] = useState([]);
+
+  useEffect(() => { dbGetCommunityActivity(8).then(setCommunityFeed); }, []);
 
   const filteredCollectors = collectorSearch.trim()
     ? PUBLIC_COLLECTORS.filter(c => c.name.toLowerCase().includes(collectorSearch.toLowerCase()))
@@ -1645,7 +1728,8 @@ function DiscoverPage({ onViewProfile }) {
     )}
 
     <div style={{ marginTop:28 }}><SH title="Recent Activity" /></div>
-    {COMMUNITY_ACTIVITY.map((a,i)=>(<div key={i} style={{ padding:"8px 0", borderBottom:`1px solid ${borderClr}`, fontSize:12 }}><span style={{ color:gold, fontFamily:"'Cinzel', serif" }}>{a.user}</span> <span style={{ color:"#444" }}>added</span> <span style={{ color:"#e0d6c8" }}>{a.title}</span><div style={{ fontSize:10, color:"#333" }}>{a.edition} · {a.time}</div></div>))}
+    {communityFeed.length > 0 ? communityFeed.map((a,i)=>(<div key={i} style={{ padding:"8px 0", borderBottom:`1px solid ${borderClr}`, fontSize:12 }}><span style={{ color:gold, fontFamily:"'Cinzel', serif" }}>{a.user}</span> <span style={{ color:"#444" }}>added</span> <span style={{ color:"#e0d6c8" }}>{a.title}</span><div style={{ fontSize:10, color:"#333" }}>{a.detail} · {a.time}</div></div>))
+    : <p style={{ color:"#444", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>No community activity yet.</p>}
   </div>);
 }
 
@@ -1768,18 +1852,33 @@ function SettingsRow({ label, value, onClick }) {
   );
 }
 
-function ProfilePage({ books, wishlist, setPage, onLogout, darkMode, setDarkMode, t, user }) {
+function ProfilePage({ books, wishlist, setPage, onLogout, darkMode, setDarkMode, t, user, profile, setProfile }) {
   const tv=books.reduce((s,b)=>s+(Number(b.currentValue)||0),0); const tp=books.reduce((s,b)=>s+(Number(b.purchasePrice)||0),0);
   const pubC={}; books.forEach(b=>{if(b.publisher)pubC[b.publisher]=(pubC[b.publisher]||0)+1;}); const topP=Object.entries(pubC).sort((a,b)=>b[1]-a[1]).slice(0,5);
   const edC={}; books.forEach(b=>{if(b.editionType)edC[b.editionType]=(edC[b.editionType]||0)+1;}); const topE=Object.entries(edC).sort((a,b)=>b[1]-a[1]).slice(0,5);
   const tier=books.length>=100?"Obsidian":books.length>=50?"Gold":books.length>=20?"Silver":"Bronze";
   const [showSettings, setShowSettings] = useState(false);
   const [showContact, setShowContact] = useState(null);
-  const [isPublic, setIsPublic] = useState(true);
-  const [showValue, setShowValue] = useState(true);
-  const [newReleaseAlerts, setNewReleaseAlerts] = useState(true);
-  const [priceAlerts, setPriceAlerts] = useState(true);
-  const [wishlistAlerts, setWishlistAlerts] = useState(true);
+  const [editingName, setEditingName] = useState(false);
+  const [newName, setNewName] = useState(user?.user_metadata?.display_name || "");
+
+  // Settings state from profile
+  const [isPublic, setIsPublic] = useState(profile?.is_public ?? true);
+  const [showValue, setShowValue] = useState(profile?.show_value ?? false);
+  const [newReleaseAlerts, setNewReleaseAlerts] = useState(profile?.notify_new_releases ?? true);
+  const [priceAlerts, setPriceAlerts] = useState(profile?.notify_price_alerts ?? true);
+  const [wishlistAlerts, setWishlistAlerts] = useState(profile?.notify_wishlist ?? true);
+
+  const saveToggle = async (field, value) => {
+    if (user) await dbUpdateProfile(user.id, { [field]: value });
+  };
+
+  const handleSaveName = async () => {
+    if (!newName.trim() || !user) return;
+    await supabase.auth.updateUser({ data: { display_name: newName.trim() } });
+    await dbUpdateProfile(user.id, { display_name: newName.trim() });
+    setEditingName(false);
+  };
 
   if (showSettings) return (<div style={{ padding:"24px 20px 100px" }}>
     <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:20 }}>
@@ -1788,36 +1887,44 @@ function ProfilePage({ books, wishlist, setPage, onLogout, darkMode, setDarkMode
     </div>
 
     <SH title="Account" />
-    <SettingsRow label="Display Name" value={user?.user_metadata?.display_name || "ShelfLife Member"} onClick={()=>alert("Edit name (Demo)")} />
-    <SettingsRow label="Email" value={user?.email || ""} onClick={()=>alert("Change email (Demo)")} />
-    <SettingsRow label="Password" value="••••••••" onClick={()=>alert("Change password (Demo)")} />
-    <SettingsRow label="Plan" value="Free" onClick={()=>alert("Upgrade to Pro! (Demo)")} />
+    {editingName ? (
+      <div style={{ padding:"12px 0", borderBottom:`1px solid ${borderClr}`, display:"flex", gap:8, alignItems:"center" }}>
+        <input style={{ ...inputBase, flex:1, fontSize:13, padding:"8px 10px" }} value={newName} onChange={e=>setNewName(e.target.value)} autoFocus onKeyDown={e=>{if(e.key==="Enter")handleSaveName();}} />
+        <button onClick={handleSaveName} style={{ ...btnSmall, color:gold, borderColor:`${gold}40`, fontSize:10 }}>Save</button>
+        <button onClick={()=>setEditingName(false)} style={{ ...btnSmall, fontSize:10 }}>Cancel</button>
+      </div>
+    ) : (
+      <SettingsRow label="Display Name" value={user?.user_metadata?.display_name || "ShelfLife Member"} onClick={()=>{setNewName(user?.user_metadata?.display_name||"");setEditingName(true);}} />
+    )}
+    <SettingsRow label="Email" value={user?.email || ""} />
+    <SettingsRow label="Password" value="••••••••" onClick={()=>alert("Use 'Forgot Password' from the login screen to change your password.")} />
+    <SettingsRow label="Plan" value="Free" />
 
     <div style={{ marginTop:24 }}><SH title="Privacy" /></div>
-    <SettingsToggle label="Public Profile" desc="Let other collectors browse your shelf" value={isPublic} onChange={setIsPublic} />
-    <SettingsToggle label="Show Collection Value" desc="Display total value on your public profile" value={showValue} onChange={setShowValue} />
+    <SettingsToggle label="Public Profile" desc="Let other collectors browse your shelf" value={isPublic} onChange={v=>{setIsPublic(v);saveToggle("is_public",v);}} />
+    <SettingsToggle label="Show Collection Value" desc="Display total value on your public profile" value={showValue} onChange={v=>{setShowValue(v);saveToggle("show_value",v);}} />
 
     <div style={{ marginTop:24 }}><SH title="Notifications" /></div>
-    <SettingsToggle label="New Release Alerts" desc="When publishers you follow announce books" value={newReleaseAlerts} onChange={setNewReleaseAlerts} />
-    <SettingsToggle label="Price Alerts" desc="When books you track change in value" value={priceAlerts} onChange={setPriceAlerts} />
-    <SettingsToggle label="Wishlist Alerts" desc="When a book on your hunting list surfaces" value={wishlistAlerts} onChange={setWishlistAlerts} />
+    <SettingsToggle label="New Release Alerts" desc="When publishers you follow announce books" value={newReleaseAlerts} onChange={v=>{setNewReleaseAlerts(v);saveToggle("notify_new_releases",v);}} />
+    <SettingsToggle label="Price Alerts" desc="When books you track change in value" value={priceAlerts} onChange={v=>{setPriceAlerts(v);saveToggle("notify_price_alerts",v);}} />
+    <SettingsToggle label="Wishlist Alerts" desc="When a book on your hunting list surfaces" value={wishlistAlerts} onChange={v=>{setWishlistAlerts(v);saveToggle("notify_wishlist",v);}} />
 
     <div style={{ marginTop:24 }}><SH title="Appearance" /></div>
     <SettingsToggle label="Dark Mode" desc={darkMode ? "The collector's preferred aesthetic" : "Light mode active"} value={darkMode} onChange={setDarkMode} />
 
     <div style={{ marginTop:24 }}><SH title="Data" /></div>
-    <SettingsRow label="Export Collection" value="JSON / CSV" onClick={()=>alert("Export started (Demo)")} />
-    <SettingsRow label="Import Collection" value="" onClick={()=>alert("Import wizard (Demo)")} />
+    <SettingsRow label="Export Collection" value="Coming Soon" />
+    <SettingsRow label="Import Collection" value="Coming Soon" />
 
     <div style={{ marginTop:24 }}><SH title="About" /></div>
-    <SettingsRow label="Version" value="1.0.0" />
-    <SettingsRow label="Terms of Service" value="" onClick={()=>{}} />
-    <SettingsRow label="Privacy Policy" value="" onClick={()=>{}} />
+    <SettingsRow label="Version" value="1.0.0 Beta" />
+    <SettingsRow label="Terms of Service" value="Coming Soon" />
+    <SettingsRow label="Privacy Policy" value="Coming Soon" />
     <SettingsRow label="Send Feedback" value="" onClick={()=>setShowContact("feedback")} />
     <SettingsRow label="Contact Us" value="" onClick={()=>setShowContact("contact")} />
 
     <button onClick={onLogout} style={{ ...btnGhost, width:"100%", marginTop:32, borderColor:"#533", color:"#966" }}>Sign Out</button>
-    <button style={{ ...btnGhost, width:"100%", marginTop:12, borderColor:"#422", color:"#844", fontSize:11 }} onClick={()=>alert("Are you sure? (Demo)")}>Delete Account</button>
+    <button style={{ ...btnGhost, width:"100%", marginTop:12, borderColor:"#422", color:"#844", fontSize:11 }} onClick={()=>alert("To delete your account, please contact support@myshelflife.app")}>Delete Account</button>
 
     {showContact && <ContactModal type={showContact} onClose={()=>setShowContact(null)} user={user} />}
   </div>);
@@ -1841,10 +1948,12 @@ function ProfilePage({ books, wishlist, setPage, onLogout, darkMode, setDarkMode
     {wishlist.length===0?<p style={{ color:"#444", fontSize:12, marginBottom:20, fontStyle:"italic" }}>No wishlist items yet. Add books you're hunting for.</p>:wishlist.slice(0,3).map((w,i)=>(<div key={i} style={{ padding:"8px 0", borderBottom:`1px solid ${borderClr}`, fontSize:12, color:"#e0d6c8" }}>{w.title} <span style={{ color:"#555" }}>· {w.edition||"Any edition"}</span></div>))}
 
     <div style={{ marginTop:24 }}><SH title="By Publisher" /></div>
-    {topP.map(([p,c])=>(<div key={p} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 0", borderBottom:`1px solid ${borderClr}` }}><div style={{ flex:1 }}><div style={{ fontSize:12, color:"#e0d6c8" }}>{p}</div><div style={{ height:4, borderRadius:2, background:"#1a1a1a", marginTop:3 }}><div style={{ height:"100%", borderRadius:2, background:`linear-gradient(90deg, ${gold}, ${goldDark})`, width:`${(c/books.length)*100}%` }} /></div></div><span style={{ color:gold, fontSize:13, fontFamily:"'Cinzel', serif", minWidth:20, textAlign:"right" }}>{c}</span></div>))}
+    {topP.length > 0 ? topP.map(([p,c])=>(<div key={p} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 0", borderBottom:`1px solid ${borderClr}` }}><div style={{ flex:1 }}><div style={{ fontSize:12, color:"#e0d6c8" }}>{p}</div><div style={{ height:4, borderRadius:2, background:"#1a1a1a", marginTop:3 }}><div style={{ height:"100%", borderRadius:2, background:`linear-gradient(90deg, ${gold}, ${goldDark})`, width:`${(c/books.length)*100}%` }} /></div></div><span style={{ color:gold, fontSize:13, fontFamily:"'Cinzel', serif", minWidth:20, textAlign:"right" }}>{c}</span></div>))
+    : <p style={{ color:"#444", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>Add books with publishers to see your breakdown.</p>}
 
     <div style={{ marginTop:24 }}><SH title="By Edition Type" /></div>
-    {topE.map(([e,c])=>(<div key={e} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 0", borderBottom:`1px solid ${borderClr}` }}><div style={{ flex:1 }}><div style={{ fontSize:12, color:"#e0d6c8" }}>{e}</div><div style={{ height:4, borderRadius:2, background:"#1a1a1a", marginTop:3 }}><div style={{ height:"100%", borderRadius:2, background:"linear-gradient(90deg, #6a6, #484)", width:`${(c/books.length)*100}%` }} /></div></div><span style={{ color:"#6a6", fontSize:13, fontFamily:"'Cinzel', serif", minWidth:20, textAlign:"right" }}>{c}</span></div>))}
+    {topE.length > 0 ? topE.map(([e,c])=>(<div key={e} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 0", borderBottom:`1px solid ${borderClr}` }}><div style={{ flex:1 }}><div style={{ fontSize:12, color:"#e0d6c8" }}>{e}</div><div style={{ height:4, borderRadius:2, background:"#1a1a1a", marginTop:3 }}><div style={{ height:"100%", borderRadius:2, background:"linear-gradient(90deg, #6a6, #484)", width:`${(c/books.length)*100}%` }} /></div></div><span style={{ color:"#6a6", fontSize:13, fontFamily:"'Cinzel', serif", minWidth:20, textAlign:"right" }}>{c}</span></div>))
+    : <p style={{ color:"#444", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>Add books with edition types to see your breakdown.</p>}
 
     <button onClick={onLogout} style={{ ...btnGhost, width:"100%", marginTop:32, borderColor:"#222", color:"#555" }}>Sign Out</button>
   </div>);
@@ -1933,18 +2042,27 @@ export default function App() {
   const [modal, setModal] = useState(null);
   const [wishlist, setWishlist] = useState([]);
   const [viewingCollector, setViewingCollector] = useState(null);
-  const [darkMode, setDarkMode] = useState(true);
+  const [darkMode, setDarkMode] = useState(() => { try { const s = localStorage.getItem("shelflife-dark"); return s !== null ? s === "true" : true; } catch(e) { return true; } });
   const [user, setUser] = useState(null);
   const [booksLoading, setBooksLoading] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [profile, setProfile] = useState(null);
   const t = getTheme(darkMode);
 
-  // Load user's books and wishlist from database
+  // Persist dark mode
+  useEffect(() => { try { localStorage.setItem("shelflife-dark", String(darkMode)); } catch(e){} }, [darkMode]);
+
+  const showToast = (msg, type="success") => { setToast({msg,type}); setTimeout(()=>setToast(null), 3000); };
+
+  // Load user's books, wishlist, and profile from database
   const loadBooks = async (userId) => {
     setBooksLoading(true);
-    const userBooks = await dbLoadCollection(userId);
-    const userWishlist = await dbLoadWishlist(userId);
+    const [userBooks, userWishlist, userProfile] = await Promise.all([
+      dbLoadCollection(userId), dbLoadWishlist(userId), dbLoadProfile(userId),
+    ]);
     setBooks(userBooks);
     setWishlist(userWishlist);
+    if (userProfile) setProfile(userProfile);
     setBooksLoading(false);
   };
 
@@ -2098,15 +2216,19 @@ export default function App() {
       <style>{themeStyle}</style>
       <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet" />
 
-      {page === "home" && <HomePage books={books} setPage={setPage} t={t} user={user} setBooks={setBooks} setModal={setModal} />}
-      {page === "search" && <SearchPage onBack={()=>setPage("home")} user={user} setBooks={setBooks} />}
-      {page === "shelf" && <ShelfPage books={books} setBooks={setBooks} modal={modal} setModal={setModal} t={t} user={user} />}
+      {page === "home" && <HomePage books={books} setPage={setPage} t={t} user={user} setBooks={setBooks} setModal={setModal} showToast={showToast} />}
+      {page === "search" && <SearchPage onBack={()=>setPage("home")} user={user} setBooks={setBooks} books={books} showToast={showToast} />}
+      {page === "shelf" && <ShelfPage books={books} setBooks={setBooks} modal={modal} setModal={setModal} t={t} user={user} setPage={setPage} showToast={showToast} />}
       {page === "market" && <MarketPage setModal={setModal} t={t} user={user} />}
       {page === "discover" && <DiscoverPage onViewProfile={c => setViewingCollector(c)} t={t} />}
-      {page === "profile" && <ProfilePage books={books} wishlist={wishlist} setPage={setPage} onLogout={handleLogout} darkMode={darkMode} setDarkMode={setDarkMode} t={t} user={user} />}
+      {page === "profile" && <ProfilePage books={books} wishlist={wishlist} setPage={setPage} onLogout={handleLogout} darkMode={darkMode} setDarkMode={setDarkMode} t={t} user={user} profile={profile} setProfile={setProfile} />}
       {page === "wishlist" && <WishlistPage wishlist={wishlist} setWishlist={setWishlist} setPage={setPage} t={t} user={user} />}
 
       {modal?.type === "report" && <Modal onClose={() => setModal(null)}><ReportSaleModal onClose={() => setModal(null)} user={user} /></Modal>}
+
+      {/* Toast notification */}
+      {toast && <div style={{ position:"fixed", top:20, left:"50%", transform:"translateX(-50%)", background:toast.type==="success"?"rgba(60,120,60,0.95)":"rgba(180,60,60,0.95)", color:"#fff", padding:"12px 24px", borderRadius:8, fontSize:14, fontFamily:"'EB Garamond', serif", zIndex:2000, boxShadow:"0 8px 32px rgba(0,0,0,0.5)", animation:"fadeIn 0.3s" }}>{toast.msg}</div>}
+      <style>{`@keyframes fadeIn { from { opacity:0; transform:translateX(-50%) translateY(-10px); } to { opacity:1; transform:translateX(-50%) translateY(0); } }`}</style>
 
       <ThemedNav page={page} setPage={setPage} t={t} />
     </div>
