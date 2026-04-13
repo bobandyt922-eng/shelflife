@@ -394,6 +394,7 @@ async function dbSearchBooks(query) {
       year: doc.first_publish_year ? String(doc.first_publish_year) : "",
       source: "openlibrary",
       coverId: doc.cover_i || null,
+      olKey: doc.key || null,
     }));
   } catch (e) {
     console.log("Open Library search failed, using local results only");
@@ -810,6 +811,7 @@ function SearchPage({ onBack, onAddBook, user, setBooks, books, showToast }) {
   const [hasSearched, setHasSearched] = useState(false);
   const [showAddForm, setShowAddForm] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [selectedBook, setSelectedBook] = useState(null);
   const [totalResults, setTotalResults] = useState(0);
   const [olPage, setOlPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -864,6 +866,7 @@ function SearchPage({ onBack, onAddBook, user, setBooks, books, showToast }) {
         year: doc.first_publish_year ? String(doc.first_publish_year) : "",
         source: "openlibrary",
         coverId: doc.cover_i || null,
+        olKey: doc.key || null,
       }));
       const seen = new Set(results.map(r => (r.title + "|" + r.author).toLowerCase()));
       const unique = newResults.filter(r => {
@@ -879,8 +882,28 @@ function SearchPage({ onBack, onAddBook, user, setBooks, books, showToast }) {
   };
 
   const handleSelect = (result) => {
-    const coverUrl = result.coverId ? `https://covers.openlibrary.org/b/id/${result.coverId}-L.jpg` : "";
-    setShowAddForm({ ...emptyBook, title: result.title, author: result.author, coverUrl });
+    setSelectedBook(result);
+    // Fetch additional details from Open Library if available
+    if (result.source === "openlibrary" && result.olKey) {
+      fetch(`https://openlibrary.org${result.olKey}.json`)
+        .then(r => r.json())
+        .then(data => {
+          setSelectedBook(prev => prev ? ({
+            ...prev,
+            description: typeof data.description === "string" ? data.description : data.description?.value || "",
+            pages: data.number_of_pages || null,
+            subjects: (data.subjects || []).slice(0, 6),
+          }) : null);
+        })
+        .catch(() => {});
+    }
+  };
+
+  const handleAddFromDetail = () => {
+    if (!selectedBook) return;
+    const coverUrl = selectedBook.coverId ? `https://covers.openlibrary.org/b/id/${selectedBook.coverId}-L.jpg` : "";
+    setShowAddForm({ ...emptyBook, title: selectedBook.title, author: selectedBook.author, coverUrl });
+    setSelectedBook(null);
   };
 
   const handleSave = async (formData) => {
@@ -980,6 +1003,65 @@ function SearchPage({ onBack, onAddBook, user, setBooks, books, showToast }) {
           </div>
         )}
       </div>
+
+      {/* Book Detail View */}
+      {selectedBook && !showAddForm && (
+        <div style={{ position:"fixed", inset:0, background:"#0a0a0a", zIndex:60, overflowY:"auto", padding:"0 0 100px" }}>
+          <div style={{ position:"sticky", top:0, zIndex:61, background:"#0a0a0a", borderBottom:`1px solid ${borderClr}`, padding:"12px 16px", display:"flex", alignItems:"center", gap:10 }}>
+            <button onClick={()=>setSelectedBook(null)} style={{ background:"none", border:"none", color:"#888", fontSize:20, cursor:"pointer", padding:"4px 8px" }}>&#8592;</button>
+            <span style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8", flex:1 }}>Book Details</span>
+          </div>
+
+          <div style={{ padding:"24px 20px" }}>
+            {/* Cover and Title */}
+            <div style={{ display:"flex", gap:16, marginBottom:20 }}>
+              <div style={{ width:120, height:176, borderRadius:6, overflow:"hidden", border:`1px solid #333`, background:"#151515", flexShrink:0, boxShadow:"4px 4px 16px rgba(0,0,0,0.5)" }}>
+                {selectedBook.coverId ? (
+                  <img src={`https://covers.openlibrary.org/b/id/${selectedBook.coverId}-L.jpg`} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} />
+                ) : (
+                  <div style={{ width:"100%", height:"100%", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", padding:12, textAlign:"center" }}>
+                    <div style={{ fontFamily:"'Cinzel', serif", fontSize:11, color:"#555", textTransform:"uppercase", lineHeight:1.3 }}>{selectedBook.title}</div>
+                    <div style={{ width:16, height:1, background:"#333", margin:"8px 0" }} />
+                    <div style={{ fontSize:10, color:"#444", fontStyle:"italic" }}>{selectedBook.author?.split(" ").pop()}</div>
+                  </div>
+                )}
+              </div>
+              <div style={{ flex:1 }}>
+                <h2 style={{ fontFamily:"'Cinzel', serif", fontSize:20, color:"#e0d6c8", margin:"0 0 6px", lineHeight:1.2 }}>{selectedBook.title}</h2>
+                <p style={{ fontSize:15, color:"#888", fontStyle:"italic", margin:"0 0 8px" }}>by {selectedBook.author}</p>
+                {selectedBook.year && <p style={{ fontSize:13, color:"#555", margin:"0 0 12px" }}>First published {selectedBook.year}</p>}
+                {selectedBook.pages && <p style={{ fontSize:12, color:"#555", margin:"0 0 4px" }}>{selectedBook.pages} pages</p>}
+                <button onClick={handleAddFromDetail} style={{ ...btnPrimary, padding:"10px 20px", fontSize:12, marginTop:8 }}>+ Add to Shelf</button>
+              </div>
+            </div>
+
+            {/* Description */}
+            {selectedBook.description && (
+              <div style={{ marginBottom:20 }}>
+                <div style={labelBase}>Description</div>
+                <p style={{ color:"#999", fontSize:14, lineHeight:1.6, margin:"6px 0 0" }}>{selectedBook.description.length > 500 ? selectedBook.description.slice(0, 500) + "..." : selectedBook.description}</p>
+              </div>
+            )}
+
+            {/* Subjects/Tags */}
+            {selectedBook.subjects && selectedBook.subjects.length > 0 && (
+              <div style={{ marginBottom:20 }}>
+                <div style={labelBase}>Subjects</div>
+                <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:6 }}>
+                  {selectedBook.subjects.map((s, i) => (
+                    <span key={i} style={{ fontSize:11, color:"#777", background:"#151515", padding:"3px 10px", borderRadius:4, border:`1px solid ${borderClr}` }}>{s}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Add Button at bottom */}
+            <div style={{ borderTop:`1px solid ${borderClr}`, paddingTop:16, marginTop:8 }}>
+              <button onClick={handleAddFromDetail} style={{ ...btnPrimary, width:"100%", padding:"14px", fontSize:14 }}>Add to My Shelf</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Add Form Modal */}
       {showAddForm && (
