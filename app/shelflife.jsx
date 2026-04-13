@@ -598,18 +598,24 @@ function SearchPage({ onBack, onAddBook, user, setBooks }) {
   const [hasSearched, setHasSearched] = useState(false);
   const [showAddForm, setShowAddForm] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [totalResults, setTotalResults] = useState(0);
+  const [olPage, setOlPage] = useState(1);
+  const [loadingMore, setLoadingMore] = useState(false);
   const timer = useRef(null);
   const inputRef = useRef(null);
+  const lastQuery = useRef("");
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
   const doSearch = (q) => {
     setQuery(q);
     clearTimeout(timer.current);
-    if (q.trim().length < 2) { setResults([]); setHasSearched(false); return; }
+    if (q.trim().length < 2) { setResults([]); setHasSearched(false); setTotalResults(0); return; }
     timer.current = setTimeout(async () => {
       setSearching(true);
       setHasSearched(true);
+      setOlPage(1);
+      lastQuery.current = q;
       const dbResults = await dbSearchBooks(q);
       const ql = q.toLowerCase();
       const localResults = BOOK_DB.filter(b => b.title.toLowerCase().includes(ql) || b.author.toLowerCase().includes(ql)).map(b => ({ ...b, source: "local" }));
@@ -619,9 +625,45 @@ function SearchPage({ onBack, onAddBook, user, setBooks }) {
         const key = (r.title + "|" + r.author).toLowerCase();
         if (!seen.has(key)) { seen.add(key); merged.push(r); }
       });
+      // Get total count from Open Library
+      try {
+        const resp = await fetch("https://openlibrary.org/search.json?q=" + encodeURIComponent(q) + "&limit=1&fields=key");
+        const json = await resp.json();
+        setTotalResults(json.numFound || merged.length);
+      } catch(e) { setTotalResults(merged.length); }
       setResults(merged);
       setSearching(false);
     }, 400);
+  };
+
+  const loadMore = async () => {
+    if (loadingMore) return;
+    setLoadingMore(true);
+    const nextPage = olPage + 1;
+    try {
+      const offset = nextPage * 20;
+      const resp = await fetch(
+        "https://openlibrary.org/search.json?q=" + encodeURIComponent(lastQuery.current) + "&limit=20&offset=" + offset + "&fields=key,title,author_name,first_publish_year,cover_i"
+      );
+      const json = await resp.json();
+      const newResults = (json.docs || []).map(doc => ({
+        title: doc.title || "Unknown",
+        author: (doc.author_name || []).join(", ") || "Unknown",
+        year: doc.first_publish_year ? String(doc.first_publish_year) : "",
+        source: "openlibrary",
+        coverId: doc.cover_i || null,
+      }));
+      const seen = new Set(results.map(r => (r.title + "|" + r.author).toLowerCase()));
+      const unique = newResults.filter(r => {
+        const key = (r.title + "|" + r.author).toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      setResults(prev => [...prev, ...unique]);
+      setOlPage(nextPage);
+    } catch(e) { console.log("Load more failed"); }
+    setLoadingMore(false);
   };
 
   const handleSelect = (result) => {
@@ -658,8 +700,8 @@ function SearchPage({ onBack, onAddBook, user, setBooks }) {
         {/* Always visible Add Manually */}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:10, paddingLeft:40 }}>
           <button onClick={() => setShowAddForm({ ...emptyBook, title: query || "" })} style={{ background:"none", border:"none", color:gold, fontSize:12, cursor:"pointer", fontFamily:"'Cinzel', serif", letterSpacing:0.5 }}>+ Add Manually</button>
-          {hasSearched && !searching && results.length > 0 && (
-            <span style={{ fontSize:12, color:"#666" }}>{results.length} result{results.length !== 1 ? "s" : ""}</span>
+          {hasSearched && !searching && totalResults > 0 && (
+            <span style={{ fontSize:12, color:"#666" }}>{totalResults.toLocaleString()} result{totalResults !== 1 ? "s" : ""}</span>
           )}
         </div>
       </div>
@@ -691,6 +733,15 @@ function SearchPage({ onBack, onAddBook, user, setBooks }) {
             <span style={{ fontSize:10, color:gold, fontFamily:"'Cinzel', serif", flexShrink:0, padding:"4px 10px", border:`1px solid ${gold}40`, borderRadius:4 }}>+ ADD</span>
           </div>
         ))}
+
+        {/* Load More Button */}
+        {hasSearched && !searching && results.length > 0 && results.length < totalResults && (
+          <div style={{ padding:"20px", textAlign:"center" }}>
+            <button onClick={loadMore} disabled={loadingMore} style={{ ...btnPrimary, padding:"10px 28px", fontSize:12, background:`linear-gradient(135deg, #1a1510, #111)`, color:gold, border:`1px solid ${gold}30`, opacity:loadingMore?0.6:1 }}>
+              {loadingMore ? "Loading..." : `More Results (${(totalResults - results.length).toLocaleString()} remaining)`}
+            </button>
+          </div>
+        )}
 
         {hasSearched && !searching && results.length === 0 && (
           <div style={{ padding:"40px 20px", textAlign:"center" }}>
@@ -1013,8 +1064,10 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
     setSearchingCover(true);
     setCoverOptions([]);
     try {
-      const q = encodeURIComponent(f.title + (f.author ? " " + f.author : ""));
-      const resp = await fetch(`https://openlibrary.org/search.json?q=${q}&limit=8&fields=key,title,author_name,cover_i`);
+      // Use title-specific search for much better results
+      const titleQ = encodeURIComponent(f.title.trim());
+      const authorQ = f.author.trim() ? "&author=" + encodeURIComponent(f.author.trim()) : "";
+      const resp = await fetch(`https://openlibrary.org/search.json?title=${titleQ}${authorQ}&limit=12&fields=key,title,author_name,cover_i`);
       const json = await resp.json();
       const covers = (json.docs || []).filter(d => d.cover_i).map(d => ({
         id: d.cover_i,
@@ -1023,7 +1076,10 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
         title: d.title,
         author: (d.author_name || []).join(", "),
       }));
-      setCoverOptions(covers);
+      // Deduplicate by cover ID
+      const seen = new Set();
+      const unique = covers.filter(c => { if (seen.has(c.id)) return false; seen.add(c.id); return true; });
+      setCoverOptions(unique);
     } catch (e) { console.log("Cover search failed"); }
     setSearchingCover(false);
   };
@@ -1257,7 +1313,23 @@ function DetailView({ book, onEdit, onDelete, onClose }) {
   const [showPriceCheck, setShowPriceCheck] = useState(false);
 
   return (<div>
-    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:14 }}><div><h2 style={{ fontFamily:"'Cinzel', serif", color:"#e0d6c8", margin:0, fontSize:20 }}>{book.title}</h2><p style={{ color:"#666", margin:"4px 0 0", fontStyle:"italic", fontSize:14 }}>by {book.author}</p></div><button onClick={onClose} style={{ background:"none", border:"none", color:"#444", fontSize:18, cursor:"pointer" }}>X</button></div>
+    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:14 }}>
+      <div style={{ display:"flex", gap:14, flex:1 }}>
+        {/* Cover Image */}
+        <div style={{ width:80, height:110, borderRadius:4, border:`1px solid ${borderClr}`, background:"#111", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, overflow:"hidden" }}>
+          {book.coverUrl ? (
+            <img src={book.coverUrl} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} />
+          ) : (
+            <span style={{ fontSize:9, color:"#333" }}>NO COVER</span>
+          )}
+        </div>
+        <div>
+          <h2 style={{ fontFamily:"'Cinzel', serif", color:"#e0d6c8", margin:0, fontSize:20 }}>{book.title}</h2>
+          <p style={{ color:"#666", margin:"4px 0 0", fontStyle:"italic", fontSize:14 }}>by {book.author}</p>
+        </div>
+      </div>
+      <button onClick={onClose} style={{ background:"none", border:"none", color:"#444", fontSize:18, cursor:"pointer", alignSelf:"flex-start" }}>X</button>
+    </div>
     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>{[["Publisher",book.publisher],["Edition",book.editionType],["Limitation",book.limitation],["Condition",book.condition],["Added",book.dateAdded]].map(([l,v])=>v?<div key={l}><div style={labelBase}>{l}</div><div style={{ color:"#e0d6c8", fontSize:13 }}>{v}</div></div>:null)}</div>
     {(book.purchasePrice||book.currentValue)&&<div style={{ background:"#111", borderRadius:8, padding:14, marginBottom:14, border:`1px solid ${borderClr}` }}><div style={labelBase}>Financials</div><div style={{ display:"flex", gap:20, marginTop:6, flexWrap:"wrap" }}>{book.purchasePrice&&<div><div style={{ color:"#444", fontSize:9 }}>Paid</div><div style={{ color:"#ccc", fontSize:18, fontFamily:"'Cinzel', serif" }}>${Number(book.purchasePrice).toLocaleString()}</div></div>}{book.currentValue&&<div><div style={{ color:"#444", fontSize:9 }}>Value</div><div style={{ color:gold, fontSize:18, fontFamily:"'Cinzel', serif" }}>${Number(book.currentValue).toLocaleString()}</div></div>}{g!==null&&<div><div style={{ color:"#444", fontSize:9 }}>Gain</div><div style={{ color:g>=0?"#6a6":"#c66", fontSize:18, fontFamily:"'Cinzel', serif" }}>{g>=0?"+":""}${g.toLocaleString()} {roi&&<span style={{ fontSize:11, opacity:0.6 }}>({roi}%)</span>}</div></div>}</div></div>}
 
