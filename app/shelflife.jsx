@@ -74,8 +74,8 @@ const MARKET_FEED = [
 
 const NEW_RELEASES = [
   { id:1, title:"You Like It Darker", author:"Stephen King", publisher:"Cemetery Dance", editions:"Numbered ($350) · Lettered ($2,500)", status:"Pre-order", date:"Coming 2026" },
-  { id:2, title:"Fairy Tale", author:"Stephen King", publisher:"Cemetery Dance", editions:"Gift ($125) · Numbered ($350)", status:"At Printer", date:"Slipcase in production" },
-  { id:3, title:"Dissonant Harmonies", author:"Brian Keene & Bev Vincent", publisher:"Cemetery Dance", editions:"Limited", status:"Ready for Printer", date:"2026" },
+  { id:2, title:"Fairy Tale", author:"Stephen King", publisher:"Cemetery Dance", editions:"Gift ($125) · Numbered ($350)", status:"Pre-order", date:"2026" },
+  { id:3, title:"Dissonant Harmonies", author:"Brian Keene & Bev Vincent", publisher:"Cemetery Dance", editions:"Limited", status:"Pre-order", date:"2026" },
   { id:4, title:"The Angel of Indian Lake", author:"Stephen Graham Jones", publisher:"Subterranean Press", editions:"Numbered ($60) · Lettered ($350)", status:"Available", date:"Order Now" },
 ];
 
@@ -637,8 +637,6 @@ function ResetPasswordScreen({ onDone }) {
    ═══════════════════════════════════════════ */
 function HomePage({ books, setPage, t, user, setBooks, setModal }) {
   const tv = books.reduce((s,b)=>s+(Number(b.currentValue)||0),0);
-  const tp = books.reduce((s,b)=>s+(Number(b.purchasePrice)||0),0);
-  const tg = tv-tp;
   const top = [...books].sort((a,b)=>(Number(b.currentValue)||0)-(Number(a.currentValue)||0))[0];
 
   return (
@@ -653,7 +651,7 @@ function HomePage({ books, setPage, t, user, setBooks, setModal }) {
       </div>
 
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:24 }}>
-        {[["Volumes",books.length,"#e0d6c8"],["Value","$"+tv.toLocaleString(),gold],["Invested","$"+tp.toLocaleString(),"#666"],["Gain",(tg>=0?"+":"")+"$"+tg.toLocaleString(),tg>=0?"#6a6":"#c66"]].map(([l,v,c])=>(
+        {[["Volumes",books.length,"#e0d6c8"],["Collection Value",tv>0?"$"+tv.toLocaleString():"—",gold]].map(([l,v,c])=>(
           <div key={l} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:8, padding:"12px 14px" }}>
             <div style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:2, fontFamily:"'Cinzel', serif" }}>{l}</div>
             <div style={{ fontSize:20, fontFamily:"'Cinzel', serif", color:c, marginTop:4 }}>{v}</div>
@@ -1036,7 +1034,13 @@ function CoverShelfView({ books, onSelect }) {
 function ShelfPage({ books, setBooks, modal, setModal, t, user }) {
   const [search,setSearch]=useState(""); const [sortBy,setSortBy]=useState("title"); const [prefill,setPrefill]=useState(null); const [confirmDel,setConfirmDel]=useState(null);
   const [viewMode, setViewMode] = useState("list"); // "list" | "shelf" | "covers"
+  const [showInvestment, setShowInvestment] = useState(false);
   const filtered = books.filter(b=>{const q=search.toLowerCase(); return !q||b.title.toLowerCase().includes(q)||b.author.toLowerCase().includes(q)||(b.publisher||"").toLowerCase().includes(q);}).sort((a,b)=>{if(sortBy==="title")return a.title.localeCompare(b.title);if(sortBy==="author")return a.author.localeCompare(b.author);if(sortBy==="value")return(Number(b.currentValue)||0)-(Number(a.currentValue)||0);return b.id-a.id;});
+
+  const tv = books.reduce((s,b)=>s+(Number(b.currentValue)||0),0);
+  const tp = books.reduce((s,b)=>s+(Number(b.purchasePrice)||0),0);
+  const tg = tv - tp;
+  const roi = tp > 0 ? ((tg / tp) * 100).toFixed(1) : "0";
 
   const handleSave = async (d) => {
     if (modal?.type === "edit") {
@@ -1070,10 +1074,39 @@ function ShelfPage({ books, setBooks, modal, setModal, t, user }) {
           <button onClick={()=>setModal({type:"search"})} style={{ ...btnPrimary, padding:"8px 16px", fontSize:11 }}>+ Add</button>
         </div>
       </div>
-      <div style={{ display:"flex", gap:8, marginBottom:14 }}>
-        <input style={{ ...inputBase, flex:1, fontSize:13, padding:"8px 12px" }} placeholder="Filter your shelf..." value={search} onChange={e=>setSearch(e.target.value)} />
-        <select style={{ ...selectBase, maxWidth:120, fontSize:11, padding:"8px" }} value={sortBy} onChange={e=>setSortBy(e.target.value)}><option value="title">Title</option><option value="author">Author</option><option value="value">Value</option><option value="recent">Recent</option></select>
+
+      {/* Investment Stats Toggle */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+        <div style={{ display:"flex", gap:8 }}>
+          <input style={{ ...inputBase, flex:1, fontSize:13, padding:"8px 12px", width:180 }} placeholder="Filter your shelf..." value={search} onChange={e=>setSearch(e.target.value)} />
+          <select style={{ ...selectBase, maxWidth:100, fontSize:11, padding:"8px" }} value={sortBy} onChange={e=>setSortBy(e.target.value)}><option value="title">Title</option><option value="author">Author</option><option value="value">Value</option><option value="recent">Recent</option></select>
+        </div>
+        <button onClick={()=>setShowInvestment(!showInvestment)} style={{ background:"none", border:`1px solid ${showInvestment?gold+"60":borderClr}`, color:showInvestment?gold:"#555", padding:"6px 10px", borderRadius:4, cursor:"pointer", fontSize:9, fontFamily:"'Cinzel', serif", letterSpacing:0.5, whiteSpace:"nowrap" }}>
+          {showInvestment ? "▲ Stats" : "▼ Stats"}
+        </button>
       </div>
+
+      {/* Investment Stats Panel */}
+      {showInvestment && books.length > 0 && (
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:6, marginBottom:14 }}>
+          <div style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:6, padding:"8px 10px", textAlign:"center" }}>
+            <div style={{ fontSize:8, color:"#444", textTransform:"uppercase", letterSpacing:1, fontFamily:"'Cinzel', serif" }}>Invested</div>
+            <div style={{ fontSize:14, fontFamily:"'Cinzel', serif", color:"#e0d6c8", marginTop:2 }}>${tp.toLocaleString()}</div>
+          </div>
+          <div style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:6, padding:"8px 10px", textAlign:"center" }}>
+            <div style={{ fontSize:8, color:"#444", textTransform:"uppercase", letterSpacing:1, fontFamily:"'Cinzel', serif" }}>Value</div>
+            <div style={{ fontSize:14, fontFamily:"'Cinzel', serif", color:gold, marginTop:2 }}>${tv.toLocaleString()}</div>
+          </div>
+          <div style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:6, padding:"8px 10px", textAlign:"center" }}>
+            <div style={{ fontSize:8, color:"#444", textTransform:"uppercase", letterSpacing:1, fontFamily:"'Cinzel', serif" }}>Gain</div>
+            <div style={{ fontSize:14, fontFamily:"'Cinzel', serif", color:tg>=0?"#6a6":"#c66", marginTop:2 }}>{tg>=0?"+":""}${tg.toLocaleString()}</div>
+          </div>
+          <div style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:6, padding:"8px 10px", textAlign:"center" }}>
+            <div style={{ fontSize:8, color:"#444", textTransform:"uppercase", letterSpacing:1, fontFamily:"'Cinzel', serif" }}>ROI</div>
+            <div style={{ fontSize:14, fontFamily:"'Cinzel', serif", color:tg>=0?"#6a6":"#c66", marginTop:2 }}>{roi}%</div>
+          </div>
+        </div>
+      )}
 
       {/* SPINE SHELF VIEW */}
       {viewMode === "shelf" && <BookshelfView books={filtered} onSelect={book => setModal({type:"detail",book})} />}
@@ -1574,15 +1607,25 @@ function ReportSaleModal({ onClose, user }) {
    DISCOVER PAGE
    ═══════════════════════════════════════════ */
 function DiscoverPage({ onViewProfile }) {
+  const [collectorSearch, setCollectorSearch] = useState("");
+  const [showAllCollectors, setShowAllCollectors] = useState(false);
+
+  const filteredCollectors = collectorSearch.trim()
+    ? PUBLIC_COLLECTORS.filter(c => c.name.toLowerCase().includes(collectorSearch.toLowerCase()))
+    : (showAllCollectors ? PUBLIC_COLLECTORS : PUBLIC_COLLECTORS.slice(0, 3));
+
   return (<div style={{ padding:"24px 20px 100px" }}>
     <h2 style={{ fontFamily:"'Cinzel', serif", fontSize:22, color:"#e0d6c8", margin:"0 0 4px" }}>Discover</h2>
     <p style={{ color:"#555", fontSize:12, margin:"0 0 20px", fontStyle:"italic" }}>Releases, collectors, and community</p>
 
     <SH title="New Releases" />
-    {NEW_RELEASES.map(r=>(<div key={r.id} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:8 }}><div style={{ display:"flex", justifyContent:"space-between" }}><div><div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{r.title}</div><div style={{ fontSize:12, color:"#555", fontStyle:"italic" }}>{r.author} · {r.publisher}</div><div style={{ fontSize:11, color:"#444", marginTop:4 }}>{r.editions}</div></div><span style={{ fontSize:9, padding:"3px 8px", borderRadius:4, background:r.status==="Available"?"rgba(100,170,100,0.12)":`${gold}12`, color:r.status==="Available"?"#6a6":gold, fontFamily:"'Cinzel', serif", alignSelf:"flex-start" }}>{r.status}</span></div></div>))}
+    {NEW_RELEASES.map(r=>(<div key={r.id} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:8 }}><div style={{ display:"flex", justifyContent:"space-between" }}><div><div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{r.title}</div><div style={{ fontSize:12, color:"#555", fontStyle:"italic" }}>{r.author} · {r.publisher}</div><div style={{ fontSize:11, color:"#444", marginTop:4 }}>{r.editions}</div></div><span style={{ fontSize:9, padding:"3px 8px", borderRadius:4, background:r.status==="Available"?"rgba(100,170,100,0.12)":r.status==="Sold Out"?"rgba(200,100,100,0.12)":`${gold}12`, color:r.status==="Available"?"#6a6":r.status==="Sold Out"?"#c66":gold, fontFamily:"'Cinzel', serif", alignSelf:"flex-start" }}>{r.status}</span></div></div>))}
 
-    <div style={{ marginTop:28 }}><SH title="Public Collections" sub="Browse other collectors' shelves" /></div>
-    {PUBLIC_COLLECTORS.map((c,i)=>(<div key={i} onClick={()=>onViewProfile(c)} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:8, cursor:"pointer" }}>
+    <div style={{ marginTop:28 }}>
+      <SH title="Collectors" sub="Browse other collectors' shelves" />
+      <input style={{ ...inputBase, fontSize:13, padding:"10px 14px", marginBottom:12 }} placeholder="Search collectors..." value={collectorSearch} onChange={e=>setCollectorSearch(e.target.value)} />
+    </div>
+    {filteredCollectors.map((c,i)=>(<div key={i} onClick={()=>onViewProfile(c)} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:8, cursor:"pointer" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
           <div style={{ width:32, height:32, borderRadius:"50%", background:`${gold}15`, border:`1px solid ${gold}30`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, color:gold, fontFamily:"'Cinzel', serif" }}>{c.name[0]}</div>
@@ -1592,6 +1635,14 @@ function DiscoverPage({ onViewProfile }) {
       </div>
       <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>{c.topBooks.map((b,j)=>(<span key={j} style={{ fontSize:9, color:"#555", background:"#0e0e0e", padding:"2px 6px", borderRadius:3 }}>{b}</span>))}</div>
     </div>))}
+    {!collectorSearch && !showAllCollectors && PUBLIC_COLLECTORS.length > 3 && (
+      <div style={{ textAlign:"center", marginTop:8 }}>
+        <button onClick={()=>setShowAllCollectors(true)} style={{ ...btnSmall, color:gold, borderColor:`${gold}40` }}>View All Collectors ({PUBLIC_COLLECTORS.length})</button>
+      </div>
+    )}
+    {collectorSearch && filteredCollectors.length === 0 && (
+      <p style={{ color:"#555", textAlign:"center", padding:20, fontSize:13 }}>No collectors found matching "{collectorSearch}"</p>
+    )}
 
     <div style={{ marginTop:28 }}><SH title="Recent Activity" /></div>
     {COMMUNITY_ACTIVITY.map((a,i)=>(<div key={i} style={{ padding:"8px 0", borderBottom:`1px solid ${borderClr}`, fontSize:12 }}><span style={{ color:gold, fontFamily:"'Cinzel', serif" }}>{a.user}</span> <span style={{ color:"#444" }}>added</span> <span style={{ color:"#e0d6c8" }}>{a.title}</span><div style={{ fontSize:10, color:"#333" }}>{a.edition} · {a.time}</div></div>))}
