@@ -197,6 +197,65 @@ async function dbDeleteBook(bookId) {
   return true;
 }
 
+/* Wishlist DB functions */
+async function dbLoadWishlist(userId) {
+  const { data, error } = await supabase
+    .from("wishlist")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+  if (error) { console.error("Load wishlist error:", error); return []; }
+  return (data || []).map(row => ({
+    id: row.id,
+    title: row.title,
+    author: row.author || "",
+    edition: row.edition_wanted || "",
+    maxPrice: row.max_price || "",
+    notes: row.notes || "",
+  }));
+}
+
+async function dbAddWishlistItem(userId, item) {
+  const { data, error } = await supabase
+    .from("wishlist")
+    .insert({
+      user_id: userId,
+      title: item.title,
+      author: item.author || null,
+      edition_wanted: item.edition || null,
+      max_price: item.maxPrice ? Number(item.maxPrice) : null,
+      notes: item.notes || null,
+    })
+    .select()
+    .single();
+  if (error) { console.error("Add wishlist error:", error); return null; }
+  return {
+    id: data.id, title: data.title, author: data.author || "",
+    edition: data.edition_wanted || "", maxPrice: data.max_price || "", notes: data.notes || "",
+  };
+}
+
+async function dbDeleteWishlistItem(itemId) {
+  const { error } = await supabase.from("wishlist").delete().eq("id", itemId);
+  if (error) { console.error("Delete wishlist error:", error); return false; }
+  return true;
+}
+
+/* Contact messages DB function */
+async function dbSendContactMessage(userId, name, email, topic, message) {
+  const { error } = await supabase
+    .from("contact_messages")
+    .insert({
+      user_id: userId || null,
+      name: name || null,
+      email,
+      topic,
+      message,
+    });
+  if (error) { console.error("Contact message error:", error); return false; }
+  return true;
+}
+
 async function dbSearchBooks(query) {
   const q = query.toLowerCase().trim();
   if (q.length < 2) return [];
@@ -1477,12 +1536,13 @@ function PublicProfileView({ collector, onBack }) {
 /* ═══════════════════════════════════════════
    PROFILE / STATS PAGE
    ═══════════════════════════════════════════ */
-function ContactModal({ type, onClose }) {
+function ContactModal({ type, onClose, user }) {
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(user?.email || "");
   const [topic, setTopic] = useState(type === "feedback" ? "Feature Request" : "General");
   const [message, setMessage] = useState("");
   const [sent, setSent] = useState(false);
+  const [sending, setSending] = useState(false);
 
   if (sent) return (
     <Modal onClose={onClose}>
@@ -1539,7 +1599,14 @@ function ContactModal({ type, onClose }) {
       </div>
       <div style={{ display: "flex", gap: 12, marginTop: 20, justifyContent: "flex-end" }}>
         <button onClick={onClose} style={btnGhost}>Cancel</button>
-        <button onClick={() => { if (email.trim() && message.trim()) setSent(true); }} style={{ ...btnPrimary, padding: "10px 24px", fontSize: 12, opacity: (email.trim() && message.trim()) ? 1 : 0.4 }}>Send Message</button>
+        <button onClick={async () => { 
+          if (email.trim() && message.trim()) {
+            setSending(true);
+            const ok = await dbSendContactMessage(user?.id, name, email, topic, message);
+            setSending(false);
+            if (ok) setSent(true);
+          }
+        }} disabled={sending} style={{ ...btnPrimary, padding: "10px 24px", fontSize: 12, opacity: (email.trim() && message.trim() && !sending) ? 1 : 0.4 }}>{sending ? "Sending..." : "Send Message"}</button>
       </div>
     </Modal>
   );
@@ -1616,7 +1683,7 @@ function ProfilePage({ books, wishlist, setPage, onLogout, darkMode, setDarkMode
     <button onClick={onLogout} style={{ ...btnGhost, width:"100%", marginTop:32, borderColor:"#533", color:"#966" }}>Sign Out</button>
     <button style={{ ...btnGhost, width:"100%", marginTop:12, borderColor:"#422", color:"#844", fontSize:11 }} onClick={()=>alert("Are you sure? (Demo)")}>Delete Account</button>
 
-    {showContact && <ContactModal type={showContact} onClose={()=>setShowContact(null)} />}
+    {showContact && <ContactModal type={showContact} onClose={()=>setShowContact(null)} user={user} />}
   </div>);
 
   return (<div style={{ padding:"24px 20px 100px" }}>
@@ -1650,9 +1717,24 @@ function ProfilePage({ books, wishlist, setPage, onLogout, darkMode, setDarkMode
 /* ═══════════════════════════════════════════
    WISHLIST PAGE
    ═══════════════════════════════════════════ */
-function WishlistPage({ wishlist, setWishlist, setPage }) {
+function WishlistPage({ wishlist, setWishlist, setPage, t, user }) {
   const [showAdd,setShowAdd]=useState(false); const [f,setF]=useState({title:"",author:"",edition:"",maxPrice:"",notes:""});
-  const addItem=()=>{if(f.title.trim()){setWishlist(p=>[...p,{...f,id:Date.now()}]);setF({title:"",author:"",edition:"",maxPrice:"",notes:""});setShowAdd(false);}};
+  const [saving,setSaving]=useState(false);
+
+  const addItem = async () => {
+    if (!f.title.trim() || !user) return;
+    setSaving(true);
+    const saved = await dbAddWishlistItem(user.id, f);
+    if (saved) setWishlist(p => [saved, ...p]);
+    setF({title:"",author:"",edition:"",maxPrice:"",notes:""});
+    setShowAdd(false);
+    setSaving(false);
+  };
+
+  const removeItem = async (id) => {
+    const ok = await dbDeleteWishlistItem(id);
+    if (ok) setWishlist(p => p.filter(x => x.id !== id));
+  };
   return (<div style={{ padding:"24px 20px 100px" }}>
     <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:16 }}>
       <button onClick={()=>setPage("profile")} style={{ ...btnSmall, padding:"4px 10px", color:"#555" }}>Back</button>
@@ -1665,7 +1747,7 @@ function WishlistPage({ wishlist, setWishlist, setPage }) {
     {wishlist.map(w=>(<div key={w.id} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:8, padding:"14px 16px", marginBottom:8 }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
         <div><div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{w.title}</div>{w.author&&<div style={{ fontSize:12, color:"#555", fontStyle:"italic" }}>{w.author}</div>}{w.edition&&<div style={{ fontSize:11, color:gold, marginTop:2 }}>Looking for: {w.edition}</div>}{w.maxPrice&&<div style={{ fontSize:11, color:"#666", marginTop:2 }}>Max budget: ${w.maxPrice}</div>}{w.notes&&<div style={{ fontSize:11, color:"#444", marginTop:4 }}>{w.notes}</div>}</div>
-        <button onClick={()=>setWishlist(p=>p.filter(x=>x.id!==w.id))} style={{ background:"none", border:"none", color:"#533", fontSize:14, cursor:"pointer" }}>X</button>
+        <button onClick={()=>removeItem(w.id)} style={{ background:"none", border:"none", color:"#533", fontSize:14, cursor:"pointer" }}>X</button>
       </div>
     </div>))}
 
@@ -1678,7 +1760,7 @@ function WishlistPage({ wishlist, setWishlist, setPage }) {
         <div><label style={labelBase}>Max Budget ($)</label><input style={inputBase} type="number" value={f.maxPrice} onChange={e=>setF(p=>({...p,maxPrice:e.target.value}))} /></div>
         <div><label style={labelBase}>Notes</label><input style={inputBase} value={f.notes} onChange={e=>setF(p=>({...p,notes:e.target.value}))} placeholder="Any details..." /></div>
       </div>
-      <div style={{ display:"flex", gap:12, marginTop:16, justifyContent:"flex-end" }}><button onClick={()=>setShowAdd(false)} style={btnGhost}>Cancel</button><button onClick={addItem} style={{ ...btnPrimary, padding:"10px 20px", fontSize:12, opacity:f.title.trim()?1:0.4 }}>Add to List</button></div>
+      <div style={{ display:"flex", gap:12, marginTop:16, justifyContent:"flex-end" }}><button onClick={()=>setShowAdd(false)} style={btnGhost}>Cancel</button><button onClick={addItem} disabled={saving} style={{ ...btnPrimary, padding:"10px 20px", fontSize:12, opacity:(f.title.trim()&&!saving)?1:0.4 }}>{saving?"Saving...":"Add to List"}</button></div>
     </Modal>}
   </div>);
 }
@@ -1720,11 +1802,13 @@ export default function App() {
   const [booksLoading, setBooksLoading] = useState(false);
   const t = getTheme(darkMode);
 
-  // Load user's books from database
+  // Load user's books and wishlist from database
   const loadBooks = async (userId) => {
     setBooksLoading(true);
     const userBooks = await dbLoadCollection(userId);
+    const userWishlist = await dbLoadWishlist(userId);
     setBooks(userBooks);
+    setWishlist(userWishlist);
     setBooksLoading(false);
   };
 
@@ -1879,7 +1963,7 @@ export default function App() {
       {page === "market" && <MarketPage setModal={setModal} t={t} />}
       {page === "discover" && <DiscoverPage onViewProfile={c => setViewingCollector(c)} t={t} />}
       {page === "profile" && <ProfilePage books={books} wishlist={wishlist} setPage={setPage} onLogout={handleLogout} darkMode={darkMode} setDarkMode={setDarkMode} t={t} user={user} />}
-      {page === "wishlist" && <WishlistPage wishlist={wishlist} setWishlist={setWishlist} setPage={setPage} t={t} />}
+      {page === "wishlist" && <WishlistPage wishlist={wishlist} setWishlist={setWishlist} setPage={setPage} t={t} user={user} />}
 
       {modal?.type === "report" && <Modal onClose={() => setModal(null)}><ReportSaleModal onClose={() => setModal(null)} /></Modal>}
 
