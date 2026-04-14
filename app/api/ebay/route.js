@@ -2,6 +2,12 @@ import { NextResponse } from "next/server";
 
 const EBAY_APP_ID = process.env.EBAY_APP_ID;
 const EBAY_CERT_ID = process.env.EBAY_CERT_ID;
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID;
+const GOOGLE_MARKET_DOMAINS = (process.env.GOOGLE_MARKET_DOMAINS || "abebooks.com,biblio.com,bookfinder.com,alibris.com,pangobooks.com,betterworldbooks.com")
+  .split(",")
+  .map(d => d.trim().toLowerCase())
+  .filter(Boolean);
 
 let cachedToken = null;
 let tokenExpiry = 0;
@@ -53,7 +59,11 @@ async function searchEbay(token, query) {
 
   if (!resp.ok) return [];
   const data = await resp.json();
-  return data.itemSummaries || [];
+  return (data.itemSummaries || []).map(item => ({
+    ...item,
+    marketSource: "ebay",
+    sourceLabel: "eBay",
+  }));
 }
 
 async function searchEbaySold(query) {
@@ -80,7 +90,108 @@ async function searchEbaySold(query) {
     condition: item?.condition?.[0]?.conditionDisplayName?.[0] || "",
     itemWebUrl: item?.viewItemURL?.[0] || "",
     soldDate: item?.listingInfo?.[0]?.endTime?.[0] || "",
+    marketSource: "ebay",
+    sourceLabel: "eBay",
   }));
+}
+
+function getHostname(urlValue) {
+  try {
+    return new URL(urlValue).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function normalizePriceCandidate(value) {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(String(value).replace(/[^0-9.]/g, ""));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function extractPriceFromText(text) {
+  if (!text) return null;
+  const matches = [...String(text).matchAll(/(?:US\$|\$)\s?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)/g)];
+  for (const match of matches) {
+    const n = normalizePriceCandidate(match[1]);
+    if (n) return n;
+  }
+  return null;
+}
+
+function extractGoogleResultPrice(item) {
+  const offerPrice = normalizePriceCandidate(item?.pagemap?.offer?.[0]?.price);
+  if (offerPrice) return offerPrice;
+
+  const meta = item?.pagemap?.metatags?.[0] || {};
+  const metaPrice = normalizePriceCandidate(
+    meta["product:price:amount"] ||
+    meta["og:price:amount"] ||
+    meta["twitter:data1"]
+  );
+  if (metaPrice) return metaPrice;
+
+  const snippetPrice = extractPriceFromText(item?.snippet || "");
+  if (snippetPrice) return snippetPrice;
+
+  return extractPriceFromText(item?.title || "");
+}
+
+function formatSourceLabel(hostname) {
+  if (!hostname) return "Web";
+  const stripped = hostname.replace(/^www\./, "");
+  const base = stripped.split(".").slice(0, -1).join(".") || stripped;
+  return base
+    .split(/[-.]/g)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+async function searchGoogleMarketplace(query) {
+  if (!GOOGLE_API_KEY || !GOOGLE_CSE_ID) return [];
+  const siteClause = GOOGLE_MARKET_DOMAINS.length
+    ? `(${GOOGLE_MARKET_DOMAINS.map(domain => `site:${domain}`).join(" OR ")})`
+    : "";
+  const q = [query, siteClause].filter(Boolean).join(" ");
+  const url = new URL("https://www.googleapis.com/customsearch/v1");
+  url.searchParams.set("key", GOOGLE_API_KEY);
+  url.searchParams.set("cx", GOOGLE_CSE_ID);
+  url.searchParams.set("q", q);
+  url.searchParams.set("num", "10");
+  url.searchParams.set("safe", "off");
+
+  const resp = await fetch(url.toString());
+  if (!resp.ok) return [];
+  const data = await resp.json();
+  const results = data?.items || [];
+
+  return results
+    .map(item => {
+      const listingUrl = item?.link || "";
+      const hostname = getHostname(listingUrl);
+      if (GOOGLE_MARKET_DOMAINS.length && hostname && !GOOGLE_MARKET_DOMAINS.some(domain => hostname.endsWith(domain))) {
+        return null;
+      }
+      const price = extractGoogleResultPrice(item);
+      if (!price) return null;
+      const sourceKey = hostname || "web";
+      return {
+        itemId: listingUrl || item?.cacheId || item?.title || "",
+        title: item?.title || "",
+        snippet: item?.snippet || "",
+        price: { value: String(price) },
+        condition: "",
+        itemWebUrl: listingUrl,
+        soldDate: "",
+        marketSource: sourceKey,
+        sourceLabel: formatSourceLabel(hostname),
+        thumbnailImages: item?.pagemap?.cse_thumbnail?.[0]?.src
+          ? [{ imageUrl: item.pagemap.cse_thumbnail[0].src }]
+          : [],
+      };
+    })
+    .filter(Boolean);
 }
 
 export async function GET(request) {
@@ -96,18 +207,18 @@ export async function GET(request) {
   }
 
   const needsToken = mode === "active";
-  if (!EBAY_APP_ID || (needsToken && !EBAY_CERT_ID)) {
+  const ebayAvailable = !!EBAY_APP_ID && (!needsToken || !!EBAY_CERT_ID);
+  const googleAvailable = !!GOOGLE_API_KEY && !!GOOGLE_CSE_ID;
+  if (!ebayAvailable && !googleAvailable) {
     return NextResponse.json({
-      error: needsToken
-        ? "eBay active listings are not configured"
-        : "eBay sold comps are not configured",
+      error: "No marketplace providers are configured",
       results: [],
     });
   }
 
   try {
-    const token = needsToken ? await getEbayToken() : null;
-    if (needsToken && !token) {
+    const token = needsToken && ebayAvailable ? await getEbayToken() : null;
+    if (needsToken && ebayAvailable && !token) {
       return NextResponse.json({ error: "eBay auth failed", results: [] });
     }
 
@@ -121,15 +232,25 @@ export async function GET(request) {
     ].map(q => q.trim()).filter(Boolean);
 
     // Run searches in parallel
-    const allResults = await Promise.all(
-      queries.map(q => (mode === "sold" ? searchEbaySold(q) : searchEbay(token, q)))
-    );
+    const providerRuns = [];
+    if (ebayAvailable) {
+      providerRuns.push(
+        Promise.all(queries.map(q => (mode === "sold" ? searchEbaySold(q) : searchEbay(token, q)))
+          .then(rows => rows.flat())
+        )
+      );
+    }
+    if (googleAvailable) {
+      const broadQuery = [title, author, publisher, ...editionTerms].filter(Boolean).join(" ").trim();
+      providerRuns.push(searchGoogleMarketplace(broadQuery || title));
+    }
+    const allResults = await Promise.all(providerRuns);
 
     // Merge and deduplicate by item ID or title
     const seen = new Set();
     const merged = [];
     allResults.flat().forEach(item => {
-      const key = item.itemId || item.title;
+      const key = item.itemWebUrl || item.itemId || item.title;
       if (!seen.has(key)) { seen.add(key); merged.push(item); }
     });
 
@@ -140,14 +261,28 @@ export async function GET(request) {
       const condition = item.condition || "";
       const imageUrl = item.thumbnailImages?.[0]?.imageUrl || item.image?.imageUrl || "";
       const listingUrl = item.itemWebUrl || "";
-      const matchType = getEditionMatchType(edition, itemTitle);
+      const itemSource = item.marketSource || "ebay";
+      const sourceLabel = item.sourceLabel || (itemSource === "ebay" ? "eBay" : "Web");
+      const comparableText = [itemTitle, item.snippet || ""].filter(Boolean).join(" ");
+      const matchType = getEditionMatchType(edition, comparableText);
       const soldDate = item.soldDate
         ? new Date(item.soldDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
         : "";
 
-      const score = calculateMatchScore(itemTitle, title, author, publisher, edition);
+      const score = calculateMatchScore(comparableText, title, author, publisher, edition);
 
-      return { title: itemTitle, price, condition, imageUrl, listingUrl, score, matchType, date: soldDate || (mode === "sold" ? "Sold" : "Active") };
+      return {
+        title: itemTitle,
+        price,
+        condition,
+        imageUrl,
+        listingUrl,
+        score,
+        matchType,
+        marketSource: itemSource,
+        sourceLabel,
+        date: soldDate || (itemSource === "ebay" ? (mode === "sold" ? "Sold" : "Active") : "Web"),
+      };
     });
 
     const minScore = edition ? 35 : 28;
@@ -181,6 +316,10 @@ export async function GET(request) {
       results: filtered,
       queries,
       mode,
+      providers: {
+        ebay: ebayAvailable,
+        google: googleAvailable,
+      },
       totalRaw: merged.length,
       totalFiltered: filtered.length,
     });

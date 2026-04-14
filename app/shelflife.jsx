@@ -166,7 +166,7 @@ function buildMarketPricePoints({ communityData = [], collectionData = [], ebayD
     })),
     ...ebayData.map(item => ({
       price: toPriceNumber(item.price),
-      source: "ebay",
+      source: item.marketSource || item.source || "market",
       matchType: item.matchType || getEditionMatchType(targetEdition, item.title),
     })),
   ].filter(point => point.price !== null);
@@ -2041,7 +2041,7 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
             {estimating ? "..." : "Est."}
           </button>
         </div>
-        {f.currentValue && <div style={{ fontSize:9, color:"#444", marginTop:2 }}>Based on shelves, reports, and eBay data</div>}
+        {f.currentValue && <div style={{ fontSize:9, color:"#444", marginTop:2 }}>Based on shelves, reports, and marketplace data</div>}
       </div>
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Notes</label><textarea style={{ ...inputBase, minHeight:50, resize:"vertical" }} value={f.notes} onChange={e=>s("notes",e.target.value)} /></div>
     </div>
@@ -2090,7 +2090,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user, str
       <div style={{ width: 28, height: 28, border: "2px solid #333", borderTopColor: "#c4a265", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 16px" }} />
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       <p style={{ fontFamily: "'Cinzel', serif", fontSize: 13, color: "#c4a265", letterSpacing: 1 }}>Checking prices...</p>
-      <p style={{ fontSize: 11, color: "#555", fontStyle: "italic" }}>Scanning eBay listings and community data</p>
+      <p style={{ fontSize: 11, color: "#555", fontStyle: "italic" }}>Scanning marketplace listings and community data</p>
     </div>
   );
 
@@ -2124,7 +2124,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user, str
           <div style={{ fontSize:36, fontFamily:"'Cinzel', serif", color:gold }}>${avg.toLocaleString()}</div>
           <div style={{ fontSize:12, color:"#666", marginTop:4 }}>Range: ${low.toLocaleString()} \u2014 ${high.toLocaleString()}</div>
           <div style={{ fontSize:10, color:"#444", marginTop:4 }}>
-            Based on {stats.count} {edition ? "edition-matched " : ""}data point{stats.count !== 1 ? "s" : ""} (shelves + reports + eBay)
+            Based on {stats.count} {edition ? "edition-matched " : ""}data point{stats.count !== 1 ? "s" : ""} (shelves + reports + marketplace listings)
           </div>
           <div style={{ display:"inline-flex", alignItems:"center", gap:8, marginTop:10, padding:"4px 10px", border:`1px solid ${confidence.color}55`, borderRadius:999 }}>
             <span title="Confidence considers sample size, source diversity, and strict edition match quality." style={{ fontSize:9, color:confidence.color, fontFamily:"'Cinzel', serif", letterSpacing:1.2, textTransform:"uppercase" }}>Confidence: {confidence.label}</span>
@@ -2143,8 +2143,12 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user, str
 
       <div style={{ marginBottom:16 }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-          <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>eBay Listings</div>
-          {ebayLoading ? <span style={{ fontSize:10, color:"#555" }}>Loading...</span> : <span style={{ fontSize:10, color:"#444" }}>{ebayData.length} {ebayMode === "sold" ? "sold comp" : "listing"}{ebayData.length !== 1 ? "s" : ""}</span>}
+          <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Marketplace Listings</div>
+          {ebayLoading ? <span style={{ fontSize:10, color:"#555" }}>Loading...</span> : (
+            <span style={{ fontSize:10, color:"#444" }}>
+              {ebayData.length} {ebayMode === "sold" ? "comp" : "listing"}{ebayData.length !== 1 ? "s" : ""}
+            </span>
+          )}
         </div>
         {edition && !ebayLoading && (
           <div style={{ fontSize:9, color:"#555", marginBottom:6 }}>
@@ -2163,6 +2167,11 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user, str
                   <span style={{ color:"#e0d6c8", fontFamily:"'Cinzel', serif", fontSize:14 }}>${e.price.toLocaleString()}</span>
                   {e.condition && <span style={{ color:"#555", fontSize:9 }}>{e.condition}</span>}
                   <span style={{ fontSize:8, color:"#333", background:"#1a1a1a", padding:"1px 4px", borderRadius:2 }}>Match: {e.score}%</span>
+                  {e.sourceLabel && (
+                    <span style={{ fontSize:8, color:"#666", border:"1px solid #4444", padding:"1px 4px", borderRadius:2 }}>
+                      {e.sourceLabel}
+                    </span>
+                  )}
                   {edition && e.matchType && e.matchType !== "any" && (
                     <span
                       title={e.matchType === "strict" ? "Listing explicitly matches your edition class." : e.matchType === "related" ? "Listing is a nearby edition class; useful but less exact." : "Listing lacks clear edition wording."}
@@ -2173,12 +2182,17 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user, str
                   )}
                 </div>
                 <div style={{ fontSize:10, color:"#444", marginTop:2, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{e.title}</div>
+                {e.listingUrl && (
+                  <a href={e.listingUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize:9, color:gold, textDecoration:"none" }}>
+                    View listing ↗
+                  </a>
+                )}
               </div>
               <span style={{ color:"#444", fontSize:9, flexShrink:0, marginLeft:8 }}>{e.date}</span>
             </div>
           ))
         ) : (
-          <p style={{ color:"#555", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>No eBay listings found for this title.</p>
+          <p style={{ color:"#555", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>No marketplace listings found for this title.</p>
         )}
       </div>
 
