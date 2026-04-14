@@ -158,12 +158,15 @@ function AuthPage({ mode, onComplete, onBack, onSwitch }) {
   const [resetSent, setResetSent] = useState(false);
   const [showForgot, setShowForgot] = useState(false);
   const [resetEmail, setResetEmail] = useState("");
+  const [agreedTos, setAgreedTos] = useState(false);
+  const [showTos, setShowTos] = useState(false);
 
   const authInput = { ...inputBase, background:"#1a1a1a", borderColor:"#333", color:"#e0d6c8" };
 
   const handleSignup = async () => {
     if (!email.trim() || !pass.trim()) { setError("Email and password are required."); return; }
     if (pass.length < 6) { setError("Password must be at least 6 characters."); return; }
+    if (!agreedTos) { setError("You must agree to the Terms of Service and Privacy Policy."); return; }
     setLoading(true); setError("");
     const { data, error: err } = await supabase.auth.signUp({
       email: email.trim(),
@@ -230,9 +233,17 @@ function AuthPage({ mode, onComplete, onBack, onSwitch }) {
           {error && <div style={{ background:"rgba(200,80,80,0.15)", border:"1px solid #933", borderRadius:6, padding:"10px 14px", marginBottom:16, fontSize:13, color:"#e88" }}>{error}</div>}
           {mode==="signup" && <div style={{ marginBottom:14 }}><label style={labelBase}>Display Name</label><input style={authInput} value={name} onChange={e=>setName(e.target.value)} placeholder="Your collector name" /></div>}
           <div style={{ marginBottom:14 }}><label style={labelBase}>Email</label><input style={authInput} type="email" value={email} onChange={e=>{setEmail(e.target.value);setError("");}} placeholder="your@email.com" onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}} /></div>
-          <div style={{ marginBottom:mode==="login"?8:24 }}><label style={labelBase}>Password</label><input style={authInput} type="password" value={pass} onChange={e=>{setPass(e.target.value);setError("");}} placeholder={mode==="login"?"Enter password":"Create password (6+ chars)"} onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}} /></div>
+          <div style={{ marginBottom:mode==="login"?8:14 }}><label style={labelBase}>Password</label><input style={authInput} type="password" value={pass} onChange={e=>{setPass(e.target.value);setError("");}} placeholder={mode==="login"?"Enter password":"Create password (6+ chars)"} onKeyDown={e=>{if(e.key==="Enter")handleSubmit();}} /></div>
           {mode==="login"&&<p style={{ textAlign:"right", marginBottom:20 }}><span style={{ color:gold, fontSize:12, cursor:"pointer", fontFamily:"'EB Garamond', serif" }} onClick={()=>{setShowForgot(true);setResetEmail(email);setError("");}}>Forgot password?</span></p>}
-          <button onClick={handleSubmit} disabled={loading} style={{ ...btnPrimary, width:"100%", padding:14, opacity:loading?0.6:1 }}>
+          {mode==="signup" && (
+            <div style={{ display:"flex", alignItems:"flex-start", gap:10, marginBottom:20 }}>
+              <input type="checkbox" checked={agreedTos} onChange={e=>{setAgreedTos(e.target.checked);setError("");}} style={{ marginTop:3, accentColor:gold, width:16, height:16, flexShrink:0, cursor:"pointer" }} />
+              <span style={{ fontSize:12, color:"#777", lineHeight:1.5 }}>
+                I agree to the <span onClick={()=>setShowTos(true)} style={{ color:gold, cursor:"pointer", textDecoration:"underline", textUnderlineOffset:2 }}>Terms of Service</span> and <span onClick={()=>setShowTos(true)} style={{ color:gold, cursor:"pointer", textDecoration:"underline", textUnderlineOffset:2 }}>Privacy Policy</span>
+              </span>
+            </div>
+          )}
+          <button onClick={handleSubmit} disabled={loading || (mode==="signup" && !agreedTos)} style={{ ...btnPrimary, width:"100%", padding:14, opacity:(loading || (mode==="signup" && !agreedTos))?0.5:1 }}>
             {loading ? "Please wait..." : mode==="login" ? "Enter ShelfLife" : "Begin Collecting"}
           </button>
           <p style={{ textAlign:"center", marginTop:16, fontSize:13, color:"#555" }}>{mode==="login"?"Don't have an account? ":"Already have an account? "}<span onClick={()=>{onSwitch();setError("");}} style={{ color:gold, cursor:"pointer" }}>{mode==="login"?"Sign up":"Sign in"}</span></p>
@@ -240,6 +251,54 @@ function AuthPage({ mode, onComplete, onBack, onSwitch }) {
         </div>)}
 
       </div>
+
+      {showTos && (
+        <div onClick={()=>setShowTos(false)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.92)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, backdropFilter:"blur(8px)", padding:16 }}>
+          <div onClick={e=>e.stopPropagation()} style={{ background:"#1a1a1a", border:"1px solid #2a2a2a", borderRadius:12, padding:28, width:"100%", maxWidth:600, maxHeight:"85vh", overflowY:"auto", boxShadow:"0 32px 100px rgba(0,0,0,0.9)" }}>
+            <h2 style={{ fontFamily:"'Cinzel', serif", color:gold, margin:"0 0 20px", fontSize:20 }}>Terms of Service & Privacy Policy</h2>
+            <div style={{ fontSize:13, color:"#999", lineHeight:1.8 }}>
+              <p style={{ color:"#ccc", fontWeight:600, marginBottom:8 }}>Last updated: April 2026</p>
+
+              <h3 style={{ fontFamily:"'Cinzel', serif", color:"#e0d6c8", fontSize:14, margin:"20px 0 8px" }}>1. Acceptance of Terms</h3>
+              <p>By creating an account on ShelfLife, you agree to these Terms of Service and our Privacy Policy. If you do not agree, do not create an account.</p>
+
+              <h3 style={{ fontFamily:"'Cinzel', serif", color:"#e0d6c8", fontSize:14, margin:"20px 0 8px" }}>2. Description of Service</h3>
+              <p>ShelfLife is a book collection management and valuation platform. We provide tools to catalog books, track estimated values, and connect with other collectors. Price estimates are informational only and do not constitute financial advice or appraisals.</p>
+
+              <h3 style={{ fontFamily:"'Cinzel', serif", color:"#e0d6c8", fontSize:14, margin:"20px 0 8px" }}>3. User Accounts</h3>
+              <p>You are responsible for maintaining the security of your account and password. You must provide accurate information when creating your account. You must be at least 13 years of age to use this service.</p>
+
+              <h3 style={{ fontFamily:"'Cinzel', serif", color:"#e0d6c8", fontSize:14, margin:"20px 0 8px" }}>4. User Content</h3>
+              <p>You retain ownership of all content you submit (book data, price reports, notes, images). By submitting content, you grant ShelfLife a non-exclusive license to display and use that content to operate the service, including showing anonymized price data to other users.</p>
+
+              <h3 style={{ fontFamily:"'Cinzel', serif", color:"#e0d6c8", fontSize:14, margin:"20px 0 8px" }}>5. Price Data & Valuations</h3>
+              <p>Price estimates are generated from marketplace listings, community reports, and collector data. These are approximate values only. ShelfLife makes no guarantees about the accuracy of any price estimate. Do not rely solely on ShelfLife valuations for buying, selling, or insurance decisions.</p>
+
+              <h3 style={{ fontFamily:"'Cinzel', serif", color:"#e0d6c8", fontSize:14, margin:"20px 0 8px" }}>6. Prohibited Conduct</h3>
+              <p>You agree not to: submit intentionally false price data, attempt to manipulate valuations, harass other users, scrape data from the platform, or use the service for any unlawful purpose.</p>
+
+              <h3 style={{ fontFamily:"'Cinzel', serif", color:"#e0d6c8", fontSize:14, margin:"20px 0 8px" }}>7. Privacy Policy</h3>
+              <p>We collect: your email address, display name, and the book/pricing data you submit. We use this data to operate the service and improve valuations. We do not sell your personal information to third parties. Your collection data is private by default unless you enable a public profile. We use Supabase for authentication and data storage. We may use anonymized, aggregated data for market analysis.</p>
+
+              <h3 style={{ fontFamily:"'Cinzel', serif", color:"#e0d6c8", fontSize:14, margin:"20px 0 8px" }}>8. Data Deletion</h3>
+              <p>You may request deletion of your account and associated data at any time by contacting support@myshelflife.app. We will process deletion requests within 30 days.</p>
+
+              <h3 style={{ fontFamily:"'Cinzel', serif", color:"#e0d6c8", fontSize:14, margin:"20px 0 8px" }}>9. Limitation of Liability</h3>
+              <p>ShelfLife is provided &ldquo;as is&rdquo; without warranties of any kind. We are not liable for any losses arising from your use of the service, including but not limited to reliance on price estimates, data loss, or service interruptions.</p>
+
+              <h3 style={{ fontFamily:"'Cinzel', serif", color:"#e0d6c8", fontSize:14, margin:"20px 0 8px" }}>10. Changes to Terms</h3>
+              <p>We may update these terms from time to time. Continued use of the service after changes constitutes acceptance of the new terms. We will notify users of material changes via email or in-app notification.</p>
+
+              <h3 style={{ fontFamily:"'Cinzel', serif", color:"#e0d6c8", fontSize:14, margin:"20px 0 8px" }}>11. Contact</h3>
+              <p>Questions about these terms? Contact us at support@myshelflife.app.</p>
+            </div>
+            <div style={{ display:"flex", gap:12, marginTop:24, justifyContent:"flex-end" }}>
+              <button onClick={()=>{setAgreedTos(true);setShowTos(false);setError("");}} style={{ ...btnPrimary, padding:"10px 24px", fontSize:12 }}>I Agree</button>
+              <button onClick={()=>setShowTos(false)} style={{ ...btnGhost, padding:"10px 24px", fontSize:12 }}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
