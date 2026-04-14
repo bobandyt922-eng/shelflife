@@ -1475,10 +1475,10 @@ function PriceCheckPanel({ title, edition, publisher, onClose, user }) {
       .then(r => r.json())
       .then(data => {
         if (data.results) setEbayData(data.results);
-        else if (data.error) setEbayError(data.error);
+        if (data.error) setEbayError(data.debug ? `${data.error}: ${typeof data.debug === "string" ? data.debug : JSON.stringify(data.debug)}` : data.error);
         setEbayLoading(false);
       })
-      .catch(() => { setEbayError("Failed to connect"); setEbayLoading(false); });
+      .catch(e => { setEbayError("Failed to connect: " + e.message); setEbayLoading(false); });
   }, [title]);
 
   if (loading && ebayLoading) return (

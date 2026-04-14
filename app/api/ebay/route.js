@@ -10,6 +10,7 @@ async function getEbayToken() {
   if (cachedToken && Date.now() < tokenExpiry) return cachedToken;
 
   const credentials = Buffer.from(`${EBAY_APP_ID}:${EBAY_CERT_ID}`).toString("base64");
+
   const resp = await fetch("https://api.ebay.com/identity/v1/oauth2/token", {
     method: "POST",
     headers: {
@@ -19,16 +20,20 @@ async function getEbayToken() {
     body: "grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope",
   });
 
+  const text = await resp.text();
+
   if (!resp.ok) {
-    const err = await resp.text();
-    console.error("eBay OAuth error:", err);
-    return null;
+    return { error: `OAuth failed (${resp.status}): ${text}` };
   }
 
-  const data = await resp.json();
-  cachedToken = data.access_token;
-  tokenExpiry = Date.now() + (data.expires_in - 60) * 1000;
-  return cachedToken;
+  try {
+    const data = JSON.parse(text);
+    cachedToken = data.access_token;
+    tokenExpiry = Date.now() + (data.expires_in - 60) * 1000;
+    return cachedToken;
+  } catch (e) {
+    return { error: `OAuth parse failed: ${text.substring(0, 200)}` };
+  }
 }
 
 export async function GET(request) {
@@ -42,22 +47,31 @@ export async function GET(request) {
   }
 
   if (!EBAY_APP_ID || !EBAY_CERT_ID) {
-    return NextResponse.json({ error: "eBay API not configured" }, { status: 500 });
+    return NextResponse.json({
+      error: "eBay API not configured",
+      debug: { hasAppId: !!EBAY_APP_ID, hasCertId: !!EBAY_CERT_ID },
+    }, { status: 500 });
   }
 
   try {
-    const token = await getEbayToken();
-    if (!token) {
-      return NextResponse.json({ error: "Failed to authenticate with eBay" }, { status: 500 });
+    const tokenResult = await getEbayToken();
+
+    // If token is an error object
+    if (typeof tokenResult === "object" && tokenResult.error) {
+      return NextResponse.json({
+        error: "eBay authentication failed",
+        debug: tokenResult.error,
+        results: [],
+      });
     }
 
+    const token = tokenResult;
     const query = buildSearchQuery(title, publisher, edition);
 
+    // Search eBay Browse API - no category filter for broader results
     const ebayUrl = new URL("https://api.ebay.com/buy/browse/v1/item_summary/search");
     ebayUrl.searchParams.set("q", query);
-    ebayUrl.searchParams.set("category_ids", "267");
-    ebayUrl.searchParams.set("limit", "20");
-    ebayUrl.searchParams.set("sort", "newlyListed");
+    ebayUrl.searchParams.set("limit", "25");
 
     const resp = await fetch(ebayUrl.toString(), {
       headers: {
@@ -66,13 +80,27 @@ export async function GET(request) {
       },
     });
 
+    const responseText = await resp.text();
+
     if (!resp.ok) {
-      const err = await resp.text();
-      console.error("eBay Browse API error:", resp.status, err);
-      return NextResponse.json({ error: "eBay API request failed" }, { status: 500 });
+      return NextResponse.json({
+        error: "eBay search failed",
+        debug: { status: resp.status, response: responseText.substring(0, 500) },
+        results: [],
+      });
     }
 
-    const data = await resp.json();
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch (e) {
+      return NextResponse.json({
+        error: "Failed to parse eBay response",
+        debug: responseText.substring(0, 500),
+        results: [],
+      });
+    }
+
     const items = data.itemSummaries || [];
 
     const scored = items.map(item => {
@@ -88,9 +116,9 @@ export async function GET(request) {
     });
 
     const filtered = scored
-      .filter(item => item.score >= 30 && item.price > 0)
+      .filter(item => item.score >= 25 && item.price > 0)
       .sort((a, b) => b.score - a.score)
-      .slice(0, 12);
+      .slice(0, 15);
 
     return NextResponse.json({
       results: filtered,
@@ -100,8 +128,11 @@ export async function GET(request) {
     });
 
   } catch (error) {
-    console.error("eBay API error:", error);
-    return NextResponse.json({ error: "Failed to fetch eBay data" }, { status: 500 });
+    return NextResponse.json({
+      error: "Unexpected error",
+      debug: error.message,
+      results: [],
+    });
   }
 }
 
@@ -121,12 +152,11 @@ function buildSearchQuery(title, publisher, edition) {
   if (edition) {
     const el = edition.toLowerCase();
     if (el.includes("lettered")) parts.push("lettered");
-    else if (el.includes("numbered")) parts.push("numbered limited");
+    else if (el.includes("numbered")) parts.push("numbered");
     else if (el.includes("traycase")) parts.push("traycase");
     else if (el.includes("deluxe")) parts.push("deluxe");
     else if (el.includes("first edition") || el.includes("first printing")) parts.push("first edition");
     else if (el.includes("signed")) parts.push("signed");
-    else parts.push(edition);
   }
   return parts.join(" ");
 }
