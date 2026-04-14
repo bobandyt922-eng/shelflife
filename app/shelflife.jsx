@@ -320,6 +320,28 @@ async function dbGetCollectionValues(title) {
   }));
 }
 
+/* Get recent collection entries with values for market feed */
+async function dbGetRecentCollectionEntries(limit = 10) {
+  const { data, error } = await supabase
+    .from("user_collection")
+    .select("title, author, current_value, purchase_price, edition_type, publisher, condition, created_at, profiles:user_id(display_name)")
+    .not("current_value", "is", null)
+    .gt("current_value", 0)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) { console.error("Recent entries error:", error); return []; }
+  return (data || []).map(row => {
+    const mins = Math.floor((Date.now() - new Date(row.created_at).getTime()) / 60000);
+    const timeAgo = mins < 60 ? `${mins} min ago` : mins < 1440 ? `${Math.floor(mins/60)} hr ago` : `${Math.floor(mins/1440)} days ago`;
+    return {
+      title: row.title, author: row.author || "", publisher: row.publisher || "",
+      edition: row.edition_type || "", price: Number(row.current_value),
+      condition: row.condition || "", source: "Collector Shelf",
+      user: row.profiles?.display_name || "Anonymous", date: timeAgo,
+    };
+  });
+}
+
 /* Get pricing from all user collections for a book */
 /* Price Reports DB functions */
 async function dbReportSale(userId, report) {
@@ -1821,26 +1843,19 @@ function MarketPage({ setModal, t, user }) {
   const [priceSearch, setPriceSearch] = useState("");
   const [priceCheckBook, setPriceCheckBook] = useState(null);
   const [searchResults, setSearchResults] = useState([]);
-  const [recentSales, setRecentSales] = useState([]);
-  const [shelfValues, setShelfValues] = useState([]);
+  const [marketFeed, setMarketFeed] = useState([]);
 
   useEffect(() => {
-    dbGetRecentPriceReports(10).then(setRecentSales);
-    // Get recent collection entries with values
-    supabase
-      .from("user_collection")
-      .select("title, author, publisher, edition_type, current_value, condition, profiles:user_id(display_name)")
-      .not("current_value", "is", null)
-      .gt("current_value", 0)
-      .order("created_at", { ascending: false })
-      .limit(15)
-      .then(({ data }) => {
-        if (data) setShelfValues(data.map(r => ({
-          title: r.title, author: r.author, publisher: r.publisher || "",
-          edition: r.edition_type || "", value: Number(r.current_value),
-          condition: r.condition || "", user: r.profiles?.display_name || "Anonymous",
-        })));
+    Promise.all([
+      dbGetRecentPriceReports(10),
+      dbGetRecentCollectionEntries(15),
+    ]).then(([reports, entries]) => {
+      const all = [...reports, ...entries].sort((a, b) => {
+        const parseTime = (t) => { const n = parseInt(t) || 0; if (t.includes("min")) return n; if (t.includes("hr")) return n * 60; if (t.includes("day")) return n * 1440; return 99999; };
+        return parseTime(a.date) - parseTime(b.date);
       });
+      setMarketFeed(all.slice(0, 20));
+    });
   }, []);
 
   const doSearch = (q) => {
@@ -1852,7 +1867,7 @@ function MarketPage({ setModal, t, user }) {
 
   return (<div style={{ padding:"24px 20px 100px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
-      <div><h2 style={{ fontFamily:"'Cinzel', serif", fontSize:22, color:"#e0d6c8", margin:0 }}>The Market</h2><p style={{ color:"#555", fontSize:12, margin:"2px 0 0", fontStyle:"italic" }}>Sales, prices, and trends</p></div>
+      <div><h2 style={{ fontFamily:"'Cinzel', serif", fontSize:22, color:"#e0d6c8", margin:0 }}>The Market</h2><p style={{ color:"#555", fontSize:12, margin:"2px 0 0", fontStyle:"italic" }}>Prices, values, and trends</p></div>
       <button onClick={()=>setModal({type:"report"})} style={{ ...btnPrimary, padding:"8px 14px", fontSize:10 }}>Report Sale</button>
     </div>
 
@@ -1880,21 +1895,22 @@ function MarketPage({ setModal, t, user }) {
       </div>
     )}
 
-    {/* Recent Sales - real data */}
-    <SH title="Recent Sales" sub="Community reported transactions" />
-    {recentSales.length > 0 ? recentSales.map((m,i)=>(<div key={i} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:10 }}>
+    {/* Market Feed - collection values + reported sales */}
+    <SH title="Recent Valuations" sub="From collector shelves and reported sales" />
+    {marketFeed.length > 0 ? marketFeed.map((m,i)=>(<div key={i} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:10 }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
-        <div><div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{m.title}</div><div style={{ fontSize:11, color:"#555", marginTop:2 }}>{m.publisher}{m.edition ? ` · ${m.edition}` : ""}</div></div>
+        <div><div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{m.title}</div><div style={{ fontSize:11, color:"#555", marginTop:2 }}>{m.publisher}{m.edition ? ` \u00b7 ${m.edition}` : ""}{m.condition ? ` \u00b7 ${m.condition}` : ""}</div></div>
         <div style={{ textAlign:"right" }}><div style={{ fontFamily:"'Cinzel', serif", fontSize:20, color:gold }}>${m.price.toLocaleString()}</div></div>
       </div>
-      <div style={{ display:"flex", justifyContent:"space-between", marginTop:8, paddingTop:8, borderTop:`1px solid ${borderClr}`, fontSize:10, color:"#444" }}><span>{m.source}</span><span>{m.user} · {m.date}</span></div>
+      <div style={{ display:"flex", justifyContent:"space-between", marginTop:8, paddingTop:8, borderTop:`1px solid ${borderClr}`, fontSize:10, color:"#444" }}><span>{m.source}</span><span>{m.user} \u00b7 {m.date}</span></div>
     </div>))
     : <div style={{ textAlign:"center", padding:"32px 0" }}>
-        <p style={{ color:"#555", fontSize:14, marginBottom:8 }}>No sales reported yet.</p>
-        <p style={{ color:"#444", fontSize:12, marginBottom:16 }}>Be the first to contribute pricing data.</p>
+        <p style={{ color:"#555", fontSize:14, marginBottom:8 }}>No market data yet.</p>
+        <p style={{ color:"#444", fontSize:12, marginBottom:16 }}>Add books with values or report sales to build market data.</p>
         <button onClick={()=>setModal({type:"report"})} style={{ ...btnPrimary, padding:"10px 20px", fontSize:12 }}>Report a Sale</button>
       </div>}
   </div>);
+}
 }
 
 function ReportSaleModal({ onClose, user }) {
