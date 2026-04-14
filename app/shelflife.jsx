@@ -61,39 +61,11 @@ const MY_BOOKS = [
   { id:6, title:"The Cipher", author:"Kathe Koja", publisher:"Borderlands Press", editionType:"Lettered", limitation:"Letter: F", condition:"Mint", purchasePrice:400, currentValue:950, notes:"Incredible Koja lettered.", dateAdded:"2024-04-01", coverUrl:"" },
 ];
 
-const MARKET_FEED = [
-  { id:1, title:"It", publisher:"Cemetery Dance", edition:"Lettered", price:8500, source:"eBay", date:"2 hrs ago", trend:"up" },
-  { id:2, title:"The Stand", publisher:"Cemetery Dance", edition:"Coffin Edition", price:5500, source:"Private", date:"6 hrs ago", trend:"up" },
-  { id:3, title:"Swan Song", publisher:"Subterranean Press", edition:"Lettered", price:2800, source:"AbeBooks", date:"1 day ago", trend:"up" },
-  { id:4, title:"Blood Meridian", publisher:"Suntup Editions", edition:"Artist", price:1200, source:"eBay", date:"1 day ago", trend:"down" },
-  { id:5, title:"The Fisherman", publisher:"Centipede Press", edition:"Numbered", price:350, source:"eBay", date:"2 days ago", trend:"up" },
-  { id:6, title:"Ghost Story", publisher:"Centipede Press", edition:"Lettered", price:1800, source:"Private", date:"2 days ago", trend:"stable" },
-  { id:7, title:"The Cipher", publisher:"Borderlands Press", edition:"Lettered", price:900, source:"eBay", date:"3 days ago", trend:"up" },
-  { id:8, title:"Off Season", publisher:"Cemetery Dance", edition:"Numbered", price:425, source:"AbeBooks", date:"3 days ago", trend:"stable" },
-];
-
 const NEW_RELEASES = [
   { id:1, title:"You Like It Darker", author:"Stephen King", publisher:"Cemetery Dance", editions:"Numbered ($350) · Lettered ($2,500)", status:"Pre-order", date:"Coming 2026" },
   { id:2, title:"Fairy Tale", author:"Stephen King", publisher:"Cemetery Dance", editions:"Gift ($125) · Numbered ($350)", status:"Pre-order", date:"2026" },
   { id:3, title:"Dissonant Harmonies", author:"Brian Keene & Bev Vincent", publisher:"Cemetery Dance", editions:"Limited", status:"Pre-order", date:"2026" },
   { id:4, title:"The Angel of Indian Lake", author:"Stephen Graham Jones", publisher:"Subterranean Press", editions:"Numbered ($60) · Lettered ($350)", status:"Available", date:"Order Now" },
-];
-
-const PUBLIC_COLLECTORS = [
-  { name: "DarkShelfCollector", tier: "Obsidian", books: 247, value: 89400, topBooks: ["It (CD Lettered)", "The Stand Coffin Ed.", "Pet Sematary (CD Lettered)"], isPublic: true },
-  { name: "GrailHunter", tier: "Gold", books: 83, value: 34200, topBooks: ["Ghost Story (Centipede Let.)", "The Cipher (BP Lettered)", "Swan Song (SubPress Let.)"], isPublic: true },
-  { name: "NightShade_Reader", tier: "Gold", books: 65, value: 18900, topBooks: ["NOS4A2 (SubPress Numbered)", "House of Leaves (1st Ed)", "The Fisherman (Centipede)"], isPublic: true },
-  { name: "FirstEdFanatic", tier: "Silver", books: 42, value: 12800, topBooks: ["Carrie (1st/1st)", "Salem's Lot (1st/1st)", "The Shining (1st/1st)"], isPublic: true },
-  { name: "VintageHorror", tier: "Silver", books: 38, value: 5600, topBooks: ["The Cellar (1st Paperback)", "Off Season (Original)", "Funland (1st Mass Market)"], isPublic: true },
-  { name: "RetroSpines", tier: "Bronze", books: 19, value: 2100, topBooks: ["Paperbacks from Hell (Signed)", "The Elementals (Vintage PB)", "Cold Moon (1st Ed)"], isPublic: true },
-];
-
-const COMMUNITY_ACTIVITY = [
-  { user:"DarkShelfCollector", title:"The Stand Coffin Edition", edition:"Numbered #636", time:"20 min ago" },
-  { user:"GrailHunter", title:"It", edition:"CD Lettered: M", time:"1 hr ago" },
-  { user:"NightShade_Reader", title:"Ghost Story", edition:"Centipede Lettered", time:"3 hrs ago" },
-  { user:"FirstEdFanatic", title:"Carrie", edition:"First Edition / First Printing", time:"5 hrs ago" },
-  { user:"VintageHorror", title:"The Elementals", edition:"Vintage Paperback", time:"8 hrs ago" },
 ];
 
 /* ═══════════════════════════════════════════
@@ -455,45 +427,22 @@ function PublicHomePage({ onLogin, onSignup, onBrowse }) {
         </div>
       </div>
 
-      {/* Live Market Preview */}
+      {/* What ShelfLife Does */}
       <div style={{ padding:"0 20px 32px" }}>
-        <SH title="Live Market" sub="Recent collector sales" />
-        <div style={{ display:"flex", gap:10, overflowX:"auto", paddingBottom:8 }}>
-          {MARKET_FEED.slice(0,5).map(m=>(
-            <div key={m.id} style={{ minWidth:200, background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", flexShrink:0 }}>
-              <div style={{ fontFamily:"'Cinzel', serif", fontSize:13, color:"#e0d6c8" }}>{m.title}</div>
-              <div style={{ fontSize:11, color:"#555", marginTop:2 }}>{m.publisher} · {m.edition}</div>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:8 }}>
-                <span style={{ fontFamily:"'Cinzel', serif", fontSize:18, color:gold }}>${m.price.toLocaleString()}</span>
-                <TrendBadge trend={m.trend} />
-              </div>
-              <div style={{ fontSize:10, color:"#333", marginTop:4 }}>{m.source} · {m.date}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Featured Collections */}
-      <div style={{ padding:"0 20px 32px" }}>
-        <SH title="Featured Collections" sub="Browse public collector profiles" action={<button onClick={onBrowse} style={{ ...btnSmall, fontSize:9, padding:"4px 10px" }}>Browse All</button>} />
+        <SH title="Built for Collectors" sub="Everything you need in one place" />
         <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-          {PUBLIC_COLLECTORS.slice(0,3).map((c,i)=>(
-            <div key={i} onClick={onBrowse} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", cursor:"pointer" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                  <div style={{ width:36, height:36, borderRadius:"50%", background:`${gold}15`, border:`1px solid ${gold}30`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, color:gold, fontFamily:"'Cinzel', serif" }}>{c.name[0]}</div>
-                  <div>
-                    <div style={{ fontFamily:"'Cinzel', serif", fontSize:13, color:"#e0d6c8" }}>{c.name}</div>
-                    <TierBadge tier={c.tier} />
-                  </div>
+          {[
+            ["&#128218;", "Catalog Every Edition", "Track lettered, numbered, traycased, and every other edition type with full details."],
+            ["&#128200;", "Know Your Value", "Real market data from eBay sold listings and community reports. See what your books are worth."],
+            ["&#128276;", "Never Miss a Drop", "New release alerts from the publishers you follow. Pre-orders, availability, sold out status."],
+          ].map(([icon, t, d], i) => (
+            <div key={i} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"16px" }}>
+              <div style={{ display:"flex", gap:12, alignItems:"flex-start" }}>
+                <span style={{ fontSize:24 }} dangerouslySetInnerHTML={{ __html: icon }} />
+                <div>
+                  <div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8", marginBottom:4 }}>{t}</div>
+                  <div style={{ fontSize:13, color:"#666", lineHeight:1.5 }}>{d}</div>
                 </div>
-                <div style={{ textAlign:"right" }}>
-                  <div style={{ fontSize:10, color:"#444" }}>{c.books} books</div>
-                  <div style={{ fontSize:13, color:gold, fontFamily:"'Cinzel', serif" }}>${c.value.toLocaleString()}</div>
-                </div>
-              </div>
-              <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                {c.topBooks.map((b,j)=>(<span key={j} style={{ fontSize:10, color:"#555", background:"#111", padding:"2px 8px", borderRadius:4 }}>{b}</span>))}
               </div>
             </div>
           ))}
@@ -1668,6 +1617,8 @@ function DetailView({ book, onEdit, onDelete, onClose, onUpdateCover, user }) {
   const [coverOptions, setCoverOptions] = useState([]);
   const [searchingCover, setSearchingCover] = useState(false);
   const [coverUrl, setCoverUrl] = useState(book.coverUrl || "");
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
 
   const searchCover = async () => {
     setSearchingCover(true);
@@ -1691,6 +1642,29 @@ function DetailView({ book, onEdit, onDelete, onClose, onUpdateCover, user }) {
   const saveCover = async (url) => {
     setCoverUrl(url);
     if (onUpdateCover) await onUpdateCover(book.id, url);
+  };
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const canvas = document.createElement("canvas");
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 600, maxH = 900;
+        let w = img.width, h = img.height;
+        if (w > maxW) { h = (maxW / w) * h; w = maxW; }
+        if (h > maxH) { w = (maxH / h) * w; h = maxH; }
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
+        saveCover(dataUrl);
+        setUploading(false);
+      };
+      img.onerror = () => { setUploading(false); };
+      img.src = URL.createObjectURL(file);
+    } catch (err) { setUploading(false); }
   };
 
   return (<div>
@@ -1718,18 +1692,22 @@ function DetailView({ book, onEdit, onDelete, onClose, onUpdateCover, user }) {
     {/* Quick Cover Editor */}
     {showCoverEdit && (
       <div style={{ background:"#0f0f0f", borderRadius:8, padding:14, marginBottom:14, border:`1px solid ${borderClr}` }}>
-        <div style={{ display:"flex", gap:8, marginBottom:10, alignItems:"center" }}>
-          <input style={{ ...inputBase, flex:1, fontSize:12, padding:"8px 10px" }} placeholder="Paste cover image URL..." value={coverUrl} onChange={e=>setCoverUrl(e.target.value)} />
-          <button onClick={()=>saveCover(coverUrl)} style={{ ...btnSmall, color:gold, borderColor:`${gold}40`, fontSize:10, padding:"6px 10px", whiteSpace:"nowrap" }}>Save</button>
-        </div>
-        <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:8 }}>
-          <button onClick={searchCover} disabled={searchingCover} style={{ ...btnSmall, color:gold, borderColor:`${gold}40`, fontSize:10, padding:"4px 10px" }}>
+        <div style={{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
+          <button onClick={()=>fileInputRef.current?.click()} disabled={uploading} style={{ ...btnSmall, color:gold, borderColor:`${gold}40`, fontSize:10, padding:"6px 10px" }}>
+            {uploading ? "Uploading..." : "Upload Photo"}
+          </button>
+          <button onClick={searchCover} disabled={searchingCover} style={{ ...btnSmall, color:gold, borderColor:`${gold}40`, fontSize:10, padding:"6px 10px" }}>
             {searchingCover ? "Searching..." : "Find Cover"}
           </button>
-          {coverUrl && <button onClick={()=>saveCover("")} style={{ ...btnSmall, color:"#666", fontSize:10, padding:"4px 10px" }}>Remove Cover</button>}
+          {coverUrl && <button onClick={()=>saveCover("")} style={{ ...btnSmall, color:"#666", fontSize:10, padding:"6px 10px" }}>Remove</button>}
+        </div>
+        <input ref={fileInputRef} type="file" accept="image/*" style={{ display:"none" }} onChange={handleFileUpload} />
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <input style={{ ...inputBase, flex:1, fontSize:11, padding:"8px 10px" }} placeholder="Or paste image URL..." value={coverUrl} onChange={e=>setCoverUrl(e.target.value)} />
+          <button onClick={()=>saveCover(coverUrl)} style={{ ...btnSmall, color:gold, borderColor:`${gold}40`, fontSize:10, padding:"6px 10px", whiteSpace:"nowrap" }}>Save</button>
         </div>
         {coverOptions.length > 0 && (
-          <div style={{ display:"flex", gap:6, overflowX:"auto", paddingBottom:4 }}>
+          <div style={{ display:"flex", gap:6, overflowX:"auto", paddingBottom:4, marginTop:10 }}>
             {coverOptions.map((c, i) => (
               <div key={i} onClick={()=>saveCover(c.url)} style={{
                 width:50, height:70, borderRadius:3, overflow:"hidden", cursor:"pointer", flexShrink:0,
@@ -1768,6 +1746,9 @@ function MarketPage({ setModal, t, user }) {
   const [priceSearch, setPriceSearch] = useState("");
   const [priceCheckBook, setPriceCheckBook] = useState(null);
   const [searchResults, setSearchResults] = useState([]);
+  const [recentSales, setRecentSales] = useState([]);
+
+  useEffect(() => { dbGetRecentPriceReports(10).then(setRecentSales); }, []);
 
   const doSearch = (q) => {
     setPriceSearch(q);
@@ -1800,23 +1781,26 @@ function MarketPage({ setModal, t, user }) {
       )}
     </div>
 
-    {/* Price Check Results */}
     {priceCheckBook && (
       <div style={{ marginBottom:20, border:`1px solid ${borderClr}`, borderRadius:10, padding:16, background:"#0a0a0a" }}>
         <PriceCheckPanel title={priceCheckBook.title} edition="" onClose={()=>setPriceCheckBook(null)} user={user} />
       </div>
     )}
 
-    {/* Recent Market Activity */}
-    <SH title="Recent Sales" sub="Latest reported transactions" />
-    {MARKET_FEED.map(m=>(<div key={m.id} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:10 }}>
+    {/* Recent Sales - real data */}
+    <SH title="Recent Sales" sub="Community reported transactions" />
+    {recentSales.length > 0 ? recentSales.map((m,i)=>(<div key={i} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:10 }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
-        <div><div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{m.title}</div><div style={{ fontSize:11, color:"#555", marginTop:2 }}>{m.publisher} · {m.edition}</div></div>
-        <div style={{ textAlign:"right" }}><div style={{ fontFamily:"'Cinzel', serif", fontSize:20, color:gold }}>${m.price.toLocaleString()}</div><TrendBadge trend={m.trend} /></div>
+        <div><div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{m.title}</div><div style={{ fontSize:11, color:"#555", marginTop:2 }}>{m.publisher}{m.edition ? ` · ${m.edition}` : ""}</div></div>
+        <div style={{ textAlign:"right" }}><div style={{ fontFamily:"'Cinzel', serif", fontSize:20, color:gold }}>${m.price.toLocaleString()}</div></div>
       </div>
-      <div style={{ display:"flex", justifyContent:"space-between", marginTop:8, paddingTop:8, borderTop:`1px solid ${borderClr}`, fontSize:10, color:"#333" }}><span>{m.source}</span><span>{m.date}</span></div>
-    </div>))}
-    <div style={{ textAlign:"center", padding:"24px 0", color:"#333" }}><p style={{ fontFamily:"'Cinzel', serif", fontSize:11, letterSpacing:1 }}>Live eBay and AbeBooks pricing coming soon</p></div>
+      <div style={{ display:"flex", justifyContent:"space-between", marginTop:8, paddingTop:8, borderTop:`1px solid ${borderClr}`, fontSize:10, color:"#444" }}><span>{m.source}</span><span>{m.user} · {m.date}</span></div>
+    </div>))
+    : <div style={{ textAlign:"center", padding:"32px 0" }}>
+        <p style={{ color:"#555", fontSize:14, marginBottom:8 }}>No sales reported yet.</p>
+        <p style={{ color:"#444", fontSize:12, marginBottom:16 }}>Be the first to contribute pricing data.</p>
+        <button onClick={()=>setModal({type:"report"})} style={{ ...btnPrimary, padding:"10px 20px", fontSize:12 }}>Report a Sale</button>
+      </div>}
   </div>);
 }
 
@@ -1856,45 +1840,26 @@ function ReportSaleModal({ onClose, user }) {
    DISCOVER PAGE
    ═══════════════════════════════════════════ */
 function DiscoverPage({ onViewProfile }) {
-  const [collectorSearch, setCollectorSearch] = useState("");
-  const [showAllCollectors, setShowAllCollectors] = useState(false);
   const [communityFeed, setCommunityFeed] = useState([]);
 
   useEffect(() => { dbGetCommunityActivity(8).then(setCommunityFeed); }, []);
 
-  const filteredCollectors = collectorSearch.trim()
-    ? PUBLIC_COLLECTORS.filter(c => c.name.toLowerCase().includes(collectorSearch.toLowerCase()))
-    : (showAllCollectors ? PUBLIC_COLLECTORS : PUBLIC_COLLECTORS.slice(0, 3));
-
   return (<div style={{ padding:"24px 20px 100px" }}>
     <h2 style={{ fontFamily:"'Cinzel', serif", fontSize:22, color:"#e0d6c8", margin:"0 0 4px" }}>Discover</h2>
-    <p style={{ color:"#555", fontSize:12, margin:"0 0 20px", fontStyle:"italic" }}>Releases, collectors, and community</p>
+    <p style={{ color:"#555", fontSize:12, margin:"0 0 20px", fontStyle:"italic" }}>Releases and community</p>
 
     <SH title="New Releases" />
     {NEW_RELEASES.map(r=>(<div key={r.id} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:8 }}><div style={{ display:"flex", justifyContent:"space-between" }}><div><div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{r.title}</div><div style={{ fontSize:12, color:"#555", fontStyle:"italic" }}>{r.author} · {r.publisher}</div><div style={{ fontSize:11, color:"#444", marginTop:4 }}>{r.editions}</div></div><span style={{ fontSize:9, padding:"3px 8px", borderRadius:4, background:r.status==="Available"?"rgba(100,170,100,0.12)":r.status==="Sold Out"?"rgba(200,100,100,0.12)":`${gold}12`, color:r.status==="Available"?"#6a6":r.status==="Sold Out"?"#c66":gold, fontFamily:"'Cinzel', serif", alignSelf:"flex-start" }}>{r.status}</span></div></div>))}
 
+    {/* Collectors - coming soon */}
     <div style={{ marginTop:28 }}>
       <SH title="Collectors" sub="Browse other collectors' shelves" />
-      <input style={{ ...inputBase, fontSize:13, padding:"10px 14px", marginBottom:12 }} placeholder="Search collectors..." value={collectorSearch} onChange={e=>setCollectorSearch(e.target.value)} />
+      <div style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"24px 20px", textAlign:"center" }}>
+        <div style={{ fontSize:24, marginBottom:8, opacity:0.3 }}>&#9734;</div>
+        <p style={{ color:"#666", fontSize:14, margin:"0 0 4px" }}>Public profiles coming soon</p>
+        <p style={{ color:"#444", fontSize:12, margin:0 }}>Once collectors start sharing their shelves, you'll find them here.</p>
+      </div>
     </div>
-    {filteredCollectors.map((c,i)=>(<div key={i} onClick={()=>onViewProfile(c)} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:8, cursor:"pointer" }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <div style={{ width:32, height:32, borderRadius:"50%", background:`${gold}15`, border:`1px solid ${gold}30`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, color:gold, fontFamily:"'Cinzel', serif" }}>{c.name[0]}</div>
-          <div><div style={{ fontFamily:"'Cinzel', serif", fontSize:13, color:"#e0d6c8" }}>{c.name}</div><TierBadge tier={c.tier} /></div>
-        </div>
-        <div style={{ textAlign:"right" }}><div style={{ fontSize:10, color:"#444" }}>{c.books} books</div><div style={{ fontSize:14, color:gold, fontFamily:"'Cinzel', serif" }}>${c.value.toLocaleString()}</div></div>
-      </div>
-      <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>{c.topBooks.map((b,j)=>(<span key={j} style={{ fontSize:9, color:"#555", background:"#0e0e0e", padding:"2px 6px", borderRadius:3 }}>{b}</span>))}</div>
-    </div>))}
-    {!collectorSearch && !showAllCollectors && PUBLIC_COLLECTORS.length > 3 && (
-      <div style={{ textAlign:"center", marginTop:8 }}>
-        <button onClick={()=>setShowAllCollectors(true)} style={{ ...btnSmall, color:gold, borderColor:`${gold}40` }}>View All Collectors ({PUBLIC_COLLECTORS.length})</button>
-      </div>
-    )}
-    {collectorSearch && filteredCollectors.length === 0 && (
-      <p style={{ color:"#555", textAlign:"center", padding:20, fontSize:13 }}>No collectors found matching "{collectorSearch}"</p>
-    )}
 
     <div style={{ marginTop:28 }}><SH title="Recent Activity" /></div>
     {communityFeed.length > 0 ? communityFeed.map((a,i)=>(<div key={i} style={{ padding:"8px 0", borderBottom:`1px solid ${borderClr}`, fontSize:12 }}><span style={{ color:gold, fontFamily:"'Cinzel', serif" }}>{a.user}</span> <span style={{ color:"#444" }}>added</span> <span style={{ color:"#e0d6c8" }}>{a.title}</span><div style={{ fontSize:10, color:"#333" }}>{a.detail} · {a.time}</div></div>))
