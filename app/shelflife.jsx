@@ -1089,26 +1089,28 @@ function BookForm({ book, onSave, onCancel, isEdit, userId }) {
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Title *</label><input style={inputBase} value={f.title} onChange={e=>s("title",e.target.value)} /></div>
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Author *</label><input style={inputBase} value={f.author} onChange={e=>s("author",e.target.value)} /></div>
       <div><label style={labelBase}>Publisher</label>
-        {f.publisher === "__custom__" || (f.publisher && !PUBLISHERS.includes(f.publisher)) ? (
+        {f.publisher === "__custom__" ? (
           <div style={{ display:"flex", gap:4 }}>
-            <input style={{ ...inputBase, flex:1 }} value={f.publisher === "__custom__" ? "" : f.publisher} onChange={e=>s("publisher",e.target.value)} placeholder="Enter publisher name..." autoFocus />
+            <input style={{ ...inputBase, flex:1 }} value="" onChange={e=>s("publisher",e.target.value)} placeholder="Enter publisher name..." autoFocus />
             <button onClick={()=>s("publisher","")} style={{ ...btnSmall, fontSize:9, padding:"4px 8px", whiteSpace:"nowrap" }}>List</button>
           </div>
         ) : (
           <select style={selectBase} value={f.publisher} onChange={e=>{if(e.target.value==="__custom__")s("publisher","__custom__");else s("publisher",e.target.value);}}>
-            <option value="">Select...</option>
+            <option value="">Select... (optional)</option>
             {(() => {
               const builtIn = PUBLISHERS.filter(p => p !== "Other");
               const custom = userPublishers.filter(p => !builtIn.includes(p));
+              const currentNotInLists = f.publisher && !builtIn.includes(f.publisher) && !custom.includes(f.publisher);
               return (
                 <>
                   {builtIn.map(p => <option key={p}>{p}</option>)}
                   {custom.length > 0 && <option disabled>── Your Publishers ──</option>}
                   {custom.map(p => <option key={`custom-${p}`}>{p}</option>)}
+                  {currentNotInLists && <option key={`prefill-${f.publisher}`}>{f.publisher}</option>}
                 </>
               );
             })()}
-            <option value="__custom__">+ Add Other Publisher</option>
+            <option value="__custom__">Other / Not Listed</option>
           </select>
         )}
       </div>

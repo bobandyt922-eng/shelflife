@@ -248,9 +248,8 @@ export async function GET(request) {
     const providerRuns = [];
     if (ebayAvailable) {
       providerRuns.push(
-        Promise.all(queries.map(q => (mode === "sold" ? searchEbaySold(q) : searchEbay(token, q)))
+        Promise.all(queries.map(q => (mode === "sold" ? searchEbaySold(q) : searchEbay(token, q))))
           .then(rows => rows.flat())
-        )
       );
     }
     if (googleAvailable) {
