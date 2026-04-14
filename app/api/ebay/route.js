@@ -30,7 +30,7 @@ async function getEbayToken() {
 async function searchEbay(token, query) {
   const ebayUrl = new URL("https://api.ebay.com/buy/browse/v1/item_summary/search");
   ebayUrl.searchParams.set("q", query);
-  ebayUrl.searchParams.set("limit", "25");
+  ebayUrl.searchParams.set("limit", "40");
 
   const resp = await fetch(ebayUrl.toString(), {
     headers: {
@@ -67,11 +67,12 @@ export async function GET(request) {
 
     // Try multiple search strategies and combine results
     const authorLast = author ? author.split(" ").pop() : "";
+    const editionTerms = getEditionSearchTerms(edition);
     const queries = [
-      title + (authorLast ? " " + authorLast : ""),           // "Pines Crouch"
-      title + (publisher ? " " + publisher : ""),              // "Pines Gauntlet Press"
-      title + " " + (authorLast || "") + " signed limited",   // "Pines Crouch signed limited"
-    ].filter(q => q.trim());
+      [title, authorLast].filter(Boolean).join(" "),
+      [title, author, publisher].filter(Boolean).join(" "),
+      [title, ...editionTerms, publisher].filter(Boolean).join(" "),
+    ].map(q => q.trim()).filter(Boolean);
 
     // Run searches in parallel
     const allResults = await Promise.all(queries.map(q => searchEbay(token, q)));
@@ -97,8 +98,9 @@ export async function GET(request) {
       return { title: itemTitle, price, condition, imageUrl, listingUrl, score, date: "Active" };
     });
 
-    const filtered = scored
-      .filter(item => item.score >= 20 && item.price > 0)
+    const minScore = edition ? 35 : 28;
+    const filtered = removePriceOutliers(scored
+      .filter(item => item.score >= minScore && item.price > 0))
       .sort((a, b) => b.score - a.score)
       .slice(0, 15);
 
@@ -184,4 +186,28 @@ function calculateMatchScore(listingTitle, bookTitle, author, publisher, edition
   }
 
   return Math.max(0, Math.min(100, score));
+}
+
+function getEditionSearchTerms(edition) {
+  const e = (edition || "").toLowerCase();
+  if (!e) return [];
+  if (e.includes("lettered")) return ["lettered"];
+  if (e.includes("numbered")) return ["numbered"];
+  if (e.includes("traycased")) return ["traycased"];
+  if (e.includes("deluxe")) return ["deluxe"];
+  if (e.includes("first edition") || e.includes("first printing")) return ["first edition"];
+  if (e.includes("signed")) return ["signed"];
+  return [edition];
+}
+
+function removePriceOutliers(items) {
+  if (items.length < 5) return items;
+  const prices = items.map(i => i.price).sort((a, b) => a - b);
+  const q1 = prices[Math.floor((prices.length - 1) * 0.25)];
+  const q3 = prices[Math.floor((prices.length - 1) * 0.75)];
+  const iqr = q3 - q1;
+  const min = q1 - iqr * 1.5;
+  const max = q3 + iqr * 1.5;
+  const filtered = items.filter(i => i.price >= min && i.price <= max);
+  return filtered.length >= 3 ? filtered : items;
 }

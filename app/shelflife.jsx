@@ -79,6 +79,60 @@ const inputBase = { width:"100%", background:"var(--input-bg)", border:"1px soli
 const selectBase = { ...inputBase, appearance:"auto" };
 const labelBase = { display:"block", fontSize:10, textTransform:"uppercase", letterSpacing:2, color:gold, marginBottom:4, fontFamily:"'Cinzel', serif" };
 const emptyBook = { title:"",author:"",publisher:"",editionType:"",limitation:"",condition:"Mint",purchasePrice:"",currentValue:"",notes:"",coverUrl:"" };
+const SHELF_VALUATION_SOURCE = "Shelf Valuation";
+
+const toPriceNumber = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+const normalizeText = (value) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+const includesNormalized = (source, target) => {
+  const t = normalizeText(target);
+  if (!t) return true;
+  return normalizeText(source).includes(t);
+};
+
+const quantile = (sorted, q) => {
+  if (sorted.length === 0) return 0;
+  const pos = (sorted.length - 1) * q;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  if (sorted[base + 1] !== undefined) return sorted[base] + rest * (sorted[base + 1] - sorted[base]);
+  return sorted[base];
+};
+
+function calculateMarketStats({ communityPrices = [], collectionPrices = [], ebayPrices = [] }) {
+  const sourcePoints = [
+    ...communityPrices.map(price => ({ price: toPriceNumber(price), source: "reports" })),
+    ...collectionPrices.map(price => ({ price: toPriceNumber(price), source: "shelves" })),
+    ...ebayPrices.map(price => ({ price: toPriceNumber(price), source: "ebay" })),
+  ].filter(p => p.price !== null);
+
+  if (sourcePoints.length === 0) return { hasData: false, avg: 0, low: 0, high: 0, count: 0 };
+
+  const sorted = sourcePoints.map(p => p.price).sort((a, b) => a - b);
+  let filtered = sorted;
+  if (sorted.length >= 4) {
+    const q1 = quantile(sorted, 0.25);
+    const q3 = quantile(sorted, 0.75);
+    const iqr = q3 - q1;
+    const min = q1 - iqr * 1.5;
+    const max = q3 + iqr * 1.5;
+    const iqrFiltered = sorted.filter(p => p >= min && p <= max);
+    if (iqrFiltered.length >= 3) filtered = iqrFiltered;
+  }
+
+  const avg = Math.round(filtered.reduce((sum, p) => sum + p, 0) / filtered.length);
+  return {
+    hasData: true,
+    avg,
+    low: Math.min(...filtered),
+    high: Math.max(...filtered),
+    count: filtered.length,
+  };
+}
 
 /* ═══════════════════════════════════════════
    DATABASE FUNCTIONS
@@ -106,6 +160,70 @@ async function dbLoadCollection(userId) {
   }));
 }
 
+function getShelfValuationMarker(shelfId) {
+  return `[shelf:${shelfId}]`;
+}
+
+async function dbSyncShelfValuation(userId, shelfId, book) {
+  if (!userId || !shelfId || !book?.title) return;
+
+  const marker = getShelfValuationMarker(shelfId);
+  const { data, error } = await supabase
+    .from("price_reports")
+    .select("id")
+    .eq("reported_by", userId)
+    .eq("sale_source", SHELF_VALUATION_SOURCE)
+    .eq("notes", marker)
+    .limit(1);
+  if (error) { console.error("Shelf valuation lookup error:", error); return; }
+
+  const existingId = data?.[0]?.id;
+  const shelfValue = toPriceNumber(book.currentValue);
+
+  if (!shelfValue) {
+    if (existingId) {
+      const { error: deleteError } = await supabase.from("price_reports").delete().eq("id", existingId);
+      if (deleteError) console.error("Shelf valuation delete error:", deleteError);
+    }
+    return;
+  }
+
+  const payload = {
+    reported_by: userId,
+    title: book.title,
+    author: book.author || null,
+    publisher: book.publisher || null,
+    edition_type: book.editionType || null,
+    sale_price: shelfValue,
+    sale_source: SHELF_VALUATION_SOURCE,
+    condition: book.condition || null,
+    notes: marker,
+  };
+
+  if (existingId) {
+    const { error: updateError } = await supabase
+      .from("price_reports")
+      .update(payload)
+      .eq("id", existingId);
+    if (updateError) console.error("Shelf valuation update error:", updateError);
+  } else {
+    const { error: insertError } = await supabase.from("price_reports").insert(payload);
+    if (insertError) console.error("Shelf valuation insert error:", insertError);
+  }
+}
+
+async function dbDeleteShelfValuation(userId, shelfId) {
+  if (!userId || !shelfId) return;
+  const marker = getShelfValuationMarker(shelfId);
+  const { error } = await supabase
+    .from("price_reports")
+    .delete()
+    .eq("reported_by", userId)
+    .eq("sale_source", SHELF_VALUATION_SOURCE)
+    .eq("notes", marker);
+  if (error) console.error("Delete shelf valuation error:", error);
+}
+
 async function dbAddBook(userId, book) {
   // Also save to the shared books table so others can find it
   await supabase.from("books").upsert(
@@ -131,6 +249,14 @@ async function dbAddBook(userId, book) {
     .select()
     .single();
   if (error) { console.error("Add book error:", error); return null; }
+  await dbSyncShelfValuation(userId, data.id, {
+    title: data.title,
+    author: data.author,
+    publisher: data.publisher,
+    editionType: data.edition_type,
+    condition: data.condition,
+    currentValue: data.current_value,
+  });
   return {
     id: data.id, title: data.title, author: data.author,
     publisher: data.publisher || "", editionType: data.edition_type || "",
@@ -140,7 +266,13 @@ async function dbAddBook(userId, book) {
   };
 }
 
-async function dbUpdateBook(bookId, book) {
+async function dbUpdateBook(bookId, book, userId) {
+  // Keep shared lookup table fresh if title/author changed.
+  await supabase.from("books").upsert(
+    { title: book.title, author: book.author },
+    { onConflict: "title,author", ignoreDuplicates: true }
+  );
+
   const { error } = await supabase
     .from("user_collection")
     .update({
@@ -157,15 +289,17 @@ async function dbUpdateBook(bookId, book) {
     })
     .eq("id", bookId);
   if (error) { console.error("Update book error:", error); return false; }
+  await dbSyncShelfValuation(userId, bookId, book);
   return true;
 }
 
-async function dbDeleteBook(bookId) {
+async function dbDeleteBook(bookId, userId) {
   const { error } = await supabase
     .from("user_collection")
     .delete()
     .eq("id", bookId);
   if (error) { console.error("Delete book error:", error); return false; }
+  await dbDeleteShelfValuation(userId, bookId);
   return true;
 }
 
@@ -301,16 +435,21 @@ async function dbCheckDuplicate(userId, title, author) {
 }
 
 /* Get collection values from all users for a book title */
-async function dbGetCollectionValues(title) {
-  const { data, error } = await supabase
+async function dbGetCollectionValues(title, { author = "", edition = "", publisher = "" } = {}) {
+  let query = supabase
     .from("user_collection")
     .select("current_value, purchase_price, edition_type, publisher, condition, profiles:user_id(display_name)")
     .ilike("title", `%${title}%`)
     .not("current_value", "is", null)
     .gt("current_value", 0)
     .limit(30);
+  if (author.trim()) query = query.ilike("author", `%${author.trim()}%`);
+
+  const { data, error } = await query;
   if (error) { console.error("Collection values error:", error); return []; }
-  return (data || []).map(row => ({
+  return (data || [])
+    .filter(row => includesNormalized(row.edition_type, edition) && includesNormalized(row.publisher, publisher))
+    .map(row => ({
     value: Number(row.current_value),
     paid: row.purchase_price ? Number(row.purchase_price) : null,
     edition: row.edition_type || "",
@@ -362,15 +501,20 @@ async function dbReportSale(userId, report) {
   return true;
 }
 
-async function dbGetPriceReports(title) {
-  const { data, error } = await supabase
+async function dbGetPriceReports(title, { author = "", edition = "", publisher = "" } = {}) {
+  let query = supabase
     .from("price_reports")
     .select("*, profiles:reported_by(display_name)")
     .ilike("title", `%${title}%`)
     .order("created_at", { ascending: false })
     .limit(20);
+  if (author.trim()) query = query.ilike("author", `%${author.trim()}%`);
+
+  const { data, error } = await query;
   if (error) { console.error("Get price reports error:", error); return []; }
-  return (data || []).map(row => ({
+  return (data || [])
+    .filter(row => includesNormalized(row.edition_type, edition) && includesNormalized(row.publisher, publisher))
+    .map(row => ({
     price: Number(row.sale_price),
     source: row.sale_source || "Unknown",
     condition: row.condition || "",
@@ -427,21 +571,22 @@ async function dbSearchBooks(query) {
 
 async function dbSearchUserCollection(query, userId) {
   const q = query.toLowerCase().trim();
-  if (!userId || q.length < 2) return [];
+  if (q.length < 2) return [];
 
   const { data, error } = await supabase
     .from("user_collection")
-    .select("title, author, date_added")
-    .eq("user_id", userId)
+    .select("title, author, publisher, edition_type, user_id, created_at")
     .or(`title.ilike.%${q}%,author.ilike.%${q}%`)
-    .order("date_added", { ascending: false })
-    .limit(20);
+    .order("created_at", { ascending: false })
+    .limit(30);
   if (error) { console.error("Search user collection error:", error); return []; }
 
   return (data || []).map(row => ({
     title: row.title || "Unknown",
     author: row.author || "Unknown",
-    source: "your-shelf",
+    publisher: row.publisher || "",
+    edition: row.edition_type || "",
+    source: userId && row.user_id === userId ? "your-shelf" : "collector-shelf",
   }));
 }
 
@@ -451,15 +596,17 @@ async function dbSearchReportedTitles(query) {
 
   const { data, error } = await supabase
     .from("price_reports")
-    .select("title, author, created_at")
+    .select("title, author, publisher, edition_type, created_at")
     .or(`title.ilike.%${q}%,author.ilike.%${q}%`)
     .order("created_at", { ascending: false })
-    .limit(20);
+    .limit(30);
   if (error) { console.error("Search price reports error:", error); return []; }
 
   return (data || []).map(row => ({
     title: row.title || "Unknown",
     author: row.author || "Unknown",
+    publisher: row.publisher || "",
+    edition: row.edition_type || "",
     source: "community-report",
   }));
 }
@@ -1283,7 +1430,7 @@ function ShelfPage({ books, setBooks, modal, setModal, t, user, setPage, showToa
 
   const handleSave = async (d) => {
     if (modal?.type === "edit") {
-      const ok = await dbUpdateBook(modal.book.id, d);
+      const ok = await dbUpdateBook(modal.book.id, d, user?.id);
       if (ok) { setBooks(p => p.map(b => b.id === modal.book.id ? { ...b, ...d } : b)); if(showToast) showToast("Book updated!"); }
     } else {
       if (!user) return;
@@ -1296,7 +1443,7 @@ function ShelfPage({ books, setBooks, modal, setModal, t, user, setPage, showToa
   };
 
   const handleDelete = async (id) => {
-    const ok = await dbDeleteBook(id);
+    const ok = await dbDeleteBook(id, user?.id);
     if (ok) setBooks(p => p.filter(b => b.id !== id));
     setModal(null); setConfirmDel(null);
   };
@@ -1373,7 +1520,7 @@ function ShelfPage({ books, setBooks, modal, setModal, t, user, setPage, showToa
 
       {modal?.type==="edit"&&<Modal onClose={()=>setModal(null)}><BookForm book={modal.book} isEdit onSave={handleSave} onCancel={()=>setModal(null)} /></Modal>}
       {modal?.type==="detail"&&!confirmDel&&<Modal onClose={()=>setModal(null)}><DetailView book={modal.book} user={user} onEdit={()=>setModal({type:"edit",book:modal.book})} onDelete={()=>setConfirmDel(modal.book.id)} onClose={()=>setModal(null)} onUpdateCover={async (bookId, url) => {
-        await dbUpdateBook(bookId, { ...modal.book, coverUrl: url });
+        await dbUpdateBook(bookId, { ...modal.book, coverUrl: url }, user?.id);
         setBooks(p => p.map(b => b.id === bookId ? { ...b, coverUrl: url } : b));
         setModal(prev => prev ? { ...prev, book: { ...prev.book, coverUrl: url } } : null);
       }} /></Modal>}
@@ -1437,10 +1584,11 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
   const estimateValue = async () => {
     if (!f.title.trim()) return;
     setEstimating(true);
+    const lookup = { author: f.author, edition: f.editionType, publisher: f.publisher };
     // Get community reports + collection values
     const [reports, collectionVals] = await Promise.all([
-      dbGetPriceReports(f.title),
-      dbGetCollectionValues(f.title),
+      dbGetPriceReports(f.title, lookup),
+      dbGetCollectionValues(f.title, lookup),
     ]);
     const communityPrices = reports.map(r => r.price);
     const collectionPrices = collectionVals.map(c => c.value);
@@ -1455,11 +1603,8 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
       const data = await resp.json();
       if (data.results) ebayPrices = data.results.map(r => r.price);
     } catch(e) {}
-    const allPrices = [...communityPrices, ...collectionPrices, ...ebayPrices];
-    if (allPrices.length > 0) {
-      const avg = Math.round(allPrices.reduce((a, b) => a + b, 0) / allPrices.length);
-      s("currentValue", String(avg));
-    }
+    const stats = calculateMarketStats({ communityPrices, collectionPrices, ebayPrices });
+    if (stats.hasData) s("currentValue", String(stats.avg));
     setEstimating(false);
   };
 
@@ -1537,7 +1682,7 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
             {estimating ? "..." : "Est."}
           </button>
         </div>
-        {f.currentValue && <div style={{ fontSize:9, color:"#444", marginTop:2 }}>Based on community reports</div>}
+        {f.currentValue && <div style={{ fontSize:9, color:"#444", marginTop:2 }}>Based on shelves, reports, and eBay data</div>}
       </div>
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Notes</label><textarea style={{ ...inputBase, minHeight:50, resize:"vertical" }} value={f.notes} onChange={e=>s("notes",e.target.value)} /></div>
     </div>
@@ -1556,9 +1701,10 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
 
   useEffect(() => {
     // Load community reports + collection values
+    const lookup = { author, edition, publisher };
     Promise.all([
-      dbGetPriceReports(title),
-      dbGetCollectionValues(title),
+      dbGetPriceReports(title, lookup),
+      dbGetCollectionValues(title, lookup),
     ]).then(([reports, collections]) => {
       setCommunityData(reports);
       setCollectionData(collections);
@@ -1577,7 +1723,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
         setEbayLoading(false);
       })
       .catch(e => { setEbayError("Failed to connect: " + e.message); setEbayLoading(false); });
-  }, [title]);
+  }, [title, author, edition, publisher]);
 
   if (loading && ebayLoading) return (
     <div style={{ padding: "40px 0", textAlign: "center" }}>
@@ -1591,11 +1737,11 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
   const communityPrices = communityData.map(c => c.price);
   const collectionPrices = collectionData.map(c => c.value);
   const ebayPrices = ebayData.map(e => e.price);
-  const allPrices = [...communityPrices, ...collectionPrices, ...ebayPrices];
-  const hasData = allPrices.length > 0;
-  const avg = hasData ? Math.round(allPrices.reduce((a,b)=>a+b,0) / allPrices.length) : 0;
-  const low = hasData ? Math.min(...allPrices) : 0;
-  const high = hasData ? Math.max(...allPrices) : 0;
+  const stats = calculateMarketStats({ communityPrices, collectionPrices, ebayPrices });
+  const hasData = stats.hasData;
+  const avg = stats.avg;
+  const low = stats.low;
+  const high = stats.high;
 
   return (
     <div>
@@ -1612,7 +1758,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
           <div style={{ fontSize:9, color:gold, textTransform:"uppercase", letterSpacing:2, fontFamily:"'Cinzel', serif", marginBottom:6 }}>Estimated Value</div>
           <div style={{ fontSize:36, fontFamily:"'Cinzel', serif", color:gold }}>${avg.toLocaleString()}</div>
           <div style={{ fontSize:12, color:"#666", marginTop:4 }}>Range: ${low.toLocaleString()} \u2014 ${high.toLocaleString()}</div>
-          <div style={{ fontSize:10, color:"#444", marginTop:4 }}>Based on {allPrices.length} data point{allPrices.length !== 1 ? "s" : ""} (shelves + reports + eBay)</div>
+          <div style={{ fontSize:10, color:"#444", marginTop:4 }}>Based on {stats.count} data point{stats.count !== 1 ? "s" : ""} (shelves + reports + eBay)</div>
         </div>
       ) : (
         <div style={{ background:"linear-gradient(135deg, #1a1510, #111)", border:`1px solid ${borderClr}`, borderRadius:10, padding:"18px 20px", marginBottom:16, textAlign:"center" }}>
@@ -1704,7 +1850,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
       ) : (
         <QuickReportSale title={title} edition={edition} user={user} onDone={(reported)=>{
           setShowReport(false);
-          if (reported) { dbGetPriceReports(title).then(r => setCommunityData(r)); }
+          if (reported) { dbGetPriceReports(title, { author, edition, publisher }).then(r => setCommunityData(r)); }
         }} />
       )}
     </div>
@@ -1962,7 +2108,7 @@ function MarketPage({ setModal, t, user }) {
           {searchResults.map((r,i)=>(
             <div key={i} onClick={()=>{setPriceCheckBook(r);setSearchResults([]);setPriceSearch("");}} style={{ padding:"10px 12px", cursor:"pointer", borderBottom:`1px solid ${borderClr}` }} onMouseEnter={e=>{e.currentTarget.style.background="#1a1a1a";}} onMouseLeave={e=>{e.currentTarget.style.background="transparent";}}>
               <div style={{ fontFamily:"'Cinzel', serif", fontSize:13, color:"#e0d6c8" }}>{r.title}</div>
-              <div style={{ fontSize:11, color:"#555", fontStyle:"italic" }}>{r.author} {r.year && `(${r.year})`}</div>
+              <div style={{ fontSize:11, color:"#555", fontStyle:"italic" }}>{r.author} {r.year && `(${r.year})`}{r.edition ? ` · ${r.edition}` : ""}</div>
             </div>
           ))}
         </div>
@@ -1974,7 +2120,14 @@ function MarketPage({ setModal, t, user }) {
 
     {priceCheckBook && (
       <div style={{ marginBottom:20, border:`1px solid ${borderClr}`, borderRadius:10, padding:16, background:"#0a0a0a" }}>
-        <PriceCheckPanel title={priceCheckBook.title} edition="" onClose={()=>setPriceCheckBook(null)} user={user} />
+        <PriceCheckPanel
+          title={priceCheckBook.title}
+          author={priceCheckBook.author || ""}
+          edition={priceCheckBook.edition || ""}
+          publisher={priceCheckBook.publisher || ""}
+          onClose={()=>setPriceCheckBook(null)}
+          user={user}
+        />
       </div>
     )}
 
