@@ -300,6 +300,27 @@ async function dbCheckDuplicate(userId, title, author) {
   return (data || []).length > 0;
 }
 
+/* Get collection values from all users for a book title */
+async function dbGetCollectionValues(title) {
+  const { data, error } = await supabase
+    .from("user_collection")
+    .select("current_value, purchase_price, edition_type, publisher, condition, profiles:user_id(display_name)")
+    .ilike("title", `%${title}%`)
+    .not("current_value", "is", null)
+    .gt("current_value", 0)
+    .limit(30);
+  if (error) { console.error("Collection values error:", error); return []; }
+  return (data || []).map(row => ({
+    value: Number(row.current_value),
+    paid: row.purchase_price ? Number(row.purchase_price) : null,
+    edition: row.edition_type || "",
+    publisher: row.publisher || "",
+    condition: row.condition || "",
+    user: row.profiles?.display_name || "Anonymous",
+  }));
+}
+
+/* Get pricing from all user collections for a book */
 /* Price Reports DB functions */
 async function dbReportSale(userId, report) {
   const { error } = await supabase
@@ -1355,9 +1376,13 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
   const estimateValue = async () => {
     if (!f.title.trim()) return;
     setEstimating(true);
-    // Get community reports
-    const reports = await dbGetPriceReports(f.title);
+    // Get community reports + collection values
+    const [reports, collectionVals] = await Promise.all([
+      dbGetPriceReports(f.title),
+      dbGetCollectionValues(f.title),
+    ]);
     const communityPrices = reports.map(r => r.price);
+    const collectionPrices = collectionVals.map(c => c.value);
     // Get eBay data
     let ebayPrices = [];
     try {
@@ -1369,7 +1394,7 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
       const data = await resp.json();
       if (data.results) ebayPrices = data.results.map(r => r.price);
     } catch(e) {}
-    const allPrices = [...communityPrices, ...ebayPrices];
+    const allPrices = [...communityPrices, ...collectionPrices, ...ebayPrices];
     if (allPrices.length > 0) {
       const avg = Math.round(allPrices.reduce((a, b) => a + b, 0) / allPrices.length);
       s("currentValue", String(avg));
@@ -1462,13 +1487,23 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
 function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
   const [loading, setLoading] = useState(true);
   const [communityData, setCommunityData] = useState([]);
+  const [collectionData, setCollectionData] = useState([]);
   const [ebayData, setEbayData] = useState([]);
   const [ebayLoading, setEbayLoading] = useState(true);
   const [ebayError, setEbayError] = useState(null);
   const [showReport, setShowReport] = useState(false);
 
   useEffect(() => {
-    dbGetPriceReports(title).then(r => { setCommunityData(r); setLoading(false); });
+    // Load community reports + collection values
+    Promise.all([
+      dbGetPriceReports(title),
+      dbGetCollectionValues(title),
+    ]).then(([reports, collections]) => {
+      setCommunityData(reports);
+      setCollectionData(collections);
+      setLoading(false);
+    });
+    // Load eBay
     const params = new URLSearchParams({ title });
     if (author) params.set("author", author);
     if (publisher) params.set("publisher", publisher);
@@ -1493,8 +1528,9 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
   );
 
   const communityPrices = communityData.map(c => c.price);
+  const collectionPrices = collectionData.map(c => c.value);
   const ebayPrices = ebayData.map(e => e.price);
-  const allPrices = [...communityPrices, ...ebayPrices];
+  const allPrices = [...communityPrices, ...collectionPrices, ...ebayPrices];
   const hasData = allPrices.length > 0;
   const avg = hasData ? Math.round(allPrices.reduce((a,b)=>a+b,0) / allPrices.length) : 0;
   const low = hasData ? Math.min(...allPrices) : 0;
@@ -1515,7 +1551,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
           <div style={{ fontSize:9, color:gold, textTransform:"uppercase", letterSpacing:2, fontFamily:"'Cinzel', serif", marginBottom:6 }}>Estimated Value</div>
           <div style={{ fontSize:36, fontFamily:"'Cinzel', serif", color:gold }}>${avg.toLocaleString()}</div>
           <div style={{ fontSize:12, color:"#666", marginTop:4 }}>Range: ${low.toLocaleString()} \u2014 ${high.toLocaleString()}</div>
-          <div style={{ fontSize:10, color:"#444", marginTop:4 }}>Based on {allPrices.length} data point{allPrices.length !== 1 ? "s" : ""} (eBay + community)</div>
+          <div style={{ fontSize:10, color:"#444", marginTop:4 }}>Based on {allPrices.length} data point{allPrices.length !== 1 ? "s" : ""} (shelves + reports + eBay)</div>
         </div>
       ) : (
         <div style={{ background:"linear-gradient(135deg, #1a1510, #111)", border:`1px solid ${borderClr}`, borderRadius:10, padding:"18px 20px", marginBottom:16, textAlign:"center" }}>
@@ -1551,6 +1587,30 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
           <p style={{ color:"#555", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>No eBay listings found for this title.</p>
         )}
       </div>
+
+      {/* Collector Shelves - values from user collections */}
+      {collectionData.length > 0 && (
+        <div style={{ marginBottom:16 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+            <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Collector Shelves</div>
+            <span style={{ fontSize:10, color:"#444" }}>{collectionData.length} collector{collectionData.length !== 1 ? "s" : ""}</span>
+          </div>
+          {collectionData.map((c,i)=>(
+            <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 12px", background:i%2===0?"#0f0f0f":"transparent", borderRadius:4, fontSize:12, marginBottom:1 }}>
+              <div>
+                <span style={{ color:"#e0d6c8", fontFamily:"'Cinzel', serif", fontSize:14 }}>${c.value.toLocaleString()}</span>
+                {c.edition && <span style={{ color:"#555", marginLeft:8, fontSize:10 }}>{c.edition}</span>}
+                {c.publisher && <span style={{ color:"#444", marginLeft:6, fontSize:10 }}>{c.publisher}</span>}
+                {c.condition && <span style={{ color:"#444", marginLeft:6, fontSize:10 }}>{c.condition}</span>}
+              </div>
+              <div style={{ textAlign:"right" }}>
+                <div style={{ color:gold, fontSize:10 }}>{c.user}</div>
+                {c.paid && <div style={{ color:"#333", fontSize:9 }}>Paid ${c.paid.toLocaleString()}</div>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {communityData.length > 0 && (
         <div style={{ marginBottom:16 }}>
@@ -1762,8 +1822,26 @@ function MarketPage({ setModal, t, user }) {
   const [priceCheckBook, setPriceCheckBook] = useState(null);
   const [searchResults, setSearchResults] = useState([]);
   const [recentSales, setRecentSales] = useState([]);
+  const [shelfValues, setShelfValues] = useState([]);
 
-  useEffect(() => { dbGetRecentPriceReports(10).then(setRecentSales); }, []);
+  useEffect(() => {
+    dbGetRecentPriceReports(10).then(setRecentSales);
+    // Get recent collection entries with values
+    supabase
+      .from("user_collection")
+      .select("title, author, publisher, edition_type, current_value, condition, profiles:user_id(display_name)")
+      .not("current_value", "is", null)
+      .gt("current_value", 0)
+      .order("created_at", { ascending: false })
+      .limit(15)
+      .then(({ data }) => {
+        if (data) setShelfValues(data.map(r => ({
+          title: r.title, author: r.author, publisher: r.publisher || "",
+          edition: r.edition_type || "", value: Number(r.current_value),
+          condition: r.condition || "", user: r.profiles?.display_name || "Anonymous",
+        })));
+      });
+  }, []);
 
   const doSearch = (q) => {
     setPriceSearch(q);
