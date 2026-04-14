@@ -1,5 +1,9 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 import { supabase } from "../lib/supabase";
+import {
+  normalizeText,
+  getEditionMatchType,
+} from "../lib/edition-classes";
 
 /* ═══════════════════════════════════════════
    CONSTANTS & DATA
@@ -87,56 +91,12 @@ const toPriceNumber = (value) => {
   return Number.isFinite(n) && n > 0 ? n : null;
 };
 
-const normalizeText = (value) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-const EDITION_CLASSES = [
-  { key: "lettered", terms: ["lettered", "letter ed", "roman numeral"] },
-  { key: "numbered", terms: ["numbered", "numbered edition", "limited numbered"] },
-  { key: "traycased", terms: ["traycased", "traycase", "slipcased", "slipcase"] },
-  { key: "deluxe", terms: ["deluxe", "ultra deluxe", "artist edition"] },
-  { key: "gift", terms: ["gift edition"] },
-  { key: "first", terms: ["first edition", "first printing", "1st edition", "1st printing"] },
-  { key: "arc-proof", terms: ["arc", "proof", "galley", "uncorrected proof"] },
-  { key: "paperback", terms: ["paperback", "mass market", "trade paperback"] },
-  { key: "hardcover", terms: ["hardcover"] },
-];
 const MIN_STRICT_COMPS_FOR_HIGH = 2;
 
 const includesNormalized = (source, target) => {
   const t = normalizeText(target);
   if (!t) return true;
   return normalizeText(source).includes(t);
-};
-
-const getEditionClass = (value) => {
-  const text = normalizeText(value);
-  if (!text) return "";
-  for (const group of EDITION_CLASSES) {
-    if (group.terms.some(term => text.includes(term))) return group.key;
-  }
-  return "";
-};
-
-const isRelatedEditionClass = (targetClass, candidateClass) => {
-  if (!targetClass || !candidateClass) return false;
-  if (targetClass === candidateClass) return true;
-  const related = {
-    lettered: ["traycased", "deluxe"],
-    numbered: ["traycased", "deluxe"],
-    traycased: ["lettered", "numbered", "deluxe"],
-    deluxe: ["traycased", "lettered", "numbered"],
-    gift: ["hardcover"],
-  };
-  return (related[targetClass] || []).includes(candidateClass);
-};
-
-const getEditionMatchType = (targetEdition, candidateEdition) => {
-  const targetClass = getEditionClass(targetEdition);
-  if (!targetClass) return "any";
-  const candidateClass = getEditionClass(candidateEdition);
-  if (!candidateClass) return "unknown";
-  if (candidateClass === targetClass) return "strict";
-  if (isRelatedEditionClass(targetClass, candidateClass)) return "related";
-  return "mismatch";
 };
 
 const pickEditionScopedPoints = (points, targetEdition, { strictOnly = false } = {}) => {
@@ -979,17 +939,6 @@ function SH({ title, sub, action }) {
   return (<div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:12 }}><div><h3 style={{ fontFamily:"'Cinzel', serif", fontSize:15, color:"#e0d6c8", margin:0, letterSpacing:1 }}>{title}</h3>{sub && <p style={{ color:"#444", fontSize:11, margin:"2px 0 0" }}>{sub}</p>}</div>{action}</div>);
 }
 
-function NavBar({ page, setPage }) {
-  const items = [{ key:"home", label:"Home", i:"⬡" },{ key:"shelf", label:"Shelf", i:"◫" },{ key:"market", label:"Market", i:"◈" },{ key:"discover", label:"Discover", i:"✦" },{ key:"profile", label:"Profile", i:"◉" }];
-  return (<nav style={{ position:"fixed", bottom:0, left:0, right:0, background:"linear-gradient(180deg, rgba(10,10,10,0.96), rgba(5,5,5,1))", borderTop:"1px solid #1a1a1a", display:"flex", justifyContent:"space-around", padding:"8px 0 14px", zIndex:900 }}>{items.map(it=>(<button key={it.key} onClick={()=>setPage(it.key)} style={{ background:"none", border:"none", cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:2, padding:"4px 10px", color:page===it.key?gold:"#444" }}><span style={{ fontSize:18 }}>{it.i}</span><span style={{ fontSize:8, fontFamily:"'Cinzel', serif", letterSpacing:1 }}>{it.label}</span></button>))}</nav>);
-}
-
-function TrendBadge({ trend }) {
-  const c = trend==="up"?"#6a6":trend==="down"?"#c66":"#666";
-  const t = trend==="up"?"▲":"▼";
-  return <span style={{ fontSize:10, color:c }}>{t}</span>;
-}
-
 function TierBadge({ tier }) {
   const c = tier==="Obsidian"?"#999":tier==="Gold"?gold:tier==="Silver"?"#bbb":"#b87333";
   return <span style={{ fontSize:9, padding:"2px 8px", borderRadius:4, border:`1px solid ${c}40`, color:c, fontFamily:"'Cinzel', serif", letterSpacing:1.5, textTransform:"uppercase" }}>{tier} Shelf</span>;
@@ -1002,7 +951,7 @@ function PublicHomePage({ onLogin, onSignup, onBrowse }) {
   const [showContact, setShowContact] = useState(false);
   return (
     <div style={{ minHeight:"100vh", background:`radial-gradient(ellipse at 50% 20%, #1a1510 0%, #0a0908 50%, #050505 100%)`, color:"#e0d6c8", fontFamily:"'EB Garamond', serif" }}>
-      <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet" />
+
 
       {/* Hero */}
       <div style={{ padding:"60px 24px 40px", textAlign:"center" }}>
@@ -1157,7 +1106,7 @@ function AuthPage({ mode, onComplete, onBack, onSwitch }) {
 
   return (
     <div style={{ minHeight:"100vh", background:`radial-gradient(ellipse at 50% 30%, #1a1510 0%, #0a0908 60%, #050505 100%)`, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:32, fontFamily:"'EB Garamond', serif" }}>
-      <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet" />
+
       <h1 style={{ fontFamily:"'Cinzel', serif", fontSize:36, fontWeight:900, margin:"0 0 32px", background:`linear-gradient(135deg, ${gold}, #e8d5a8, ${gold})`, WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", letterSpacing:4 }}>SHELFLIFE</h1>
       <div style={{ width:"100%", maxWidth:360 }}>
 
@@ -1224,7 +1173,7 @@ function ResetPasswordScreen({ onDone }) {
 
   return (
     <div style={{ minHeight:"100vh", background:`radial-gradient(ellipse at 50% 30%, #1a1510 0%, #0a0908 60%, #050505 100%)`, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:32, fontFamily:"'EB Garamond', serif" }}>
-      <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet" />
+
       <h1 style={{ fontFamily:"'Cinzel', serif", fontSize:36, fontWeight:900, margin:"0 0 32px", background:`linear-gradient(135deg, ${gold}, #e8d5a8, ${gold})`, WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", letterSpacing:4 }}>SHELFLIFE</h1>
       <div style={{ width:"100%", maxWidth:360 }}>
         <h3 style={{ fontFamily:"'Cinzel', serif", color:gold, fontSize:18, marginBottom:20, textAlign:"center" }}>Set New Password</h3>
@@ -1488,7 +1437,6 @@ function SearchPage({ onBack, onAddBook, user, setBooks, books, showToast }) {
           )}
         </div>
       </div>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       {/* Results */}
       <div style={{ padding:"4px 0" }}>
@@ -2093,7 +2041,6 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
   if (loading && ebayLoading) return (
     <div style={{ padding: "40px 0", textAlign: "center" }}>
       <div style={{ width: 28, height: 28, border: "2px solid #333", borderTopColor: "#c4a265", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 16px" }} />
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       <p style={{ fontFamily: "'Cinzel', serif", fontSize: 13, color: "#c4a265", letterSpacing: 1 }}>Checking prices...</p>
       <p style={{ fontSize: 11, color: "#555", fontStyle: "italic" }}>Scanning marketplace listings and community data</p>
     </div>
@@ -3220,11 +3167,10 @@ export default function App() {
   // Loading screen while checking session
   if (appState === "loading") return (
     <div style={{ minHeight:"100vh", background:`radial-gradient(ellipse at 50% 30%, #1a1510 0%, #0a0908 60%, #050505 100%)`, display:"flex", alignItems:"center", justifyContent:"center" }}>
-      <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet" />
+
       <div style={{ textAlign:"center" }}>
         <h1 style={{ fontFamily:"'Cinzel', serif", fontSize:36, fontWeight:900, margin:"0 0 16px", background:`linear-gradient(135deg, ${gold}, #e8d5a8, ${gold})`, WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", letterSpacing:4 }}>SHELFLIFE</h1>
         <div style={{ width:28, height:28, border:`2px solid #333`, borderTopColor:gold, borderRadius:"50%", animation:"spin 0.8s linear infinite", margin:"0 auto" }} />
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
     </div>
   );
@@ -3293,7 +3239,7 @@ export default function App() {
   if (viewingCollector) return (
     <div className="vault-app" style={{ minHeight:"100vh", fontFamily:"'EB Garamond', serif" }}>
       <style>{themeStyle}</style>
-      <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet" />
+
       <PublicProfileView collector={viewingCollector} onBack={() => setViewingCollector(null)} t={t} />
       <ThemedNav page={page} setPage={p => { setViewingCollector(null); setPage(p); }} t={t} />
     </div>
@@ -3302,7 +3248,7 @@ export default function App() {
   return (
     <div className="vault-app" style={{ minHeight:"100vh", fontFamily:"'EB Garamond', serif" }}>
       <style>{themeStyle}</style>
-      <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=EB+Garamond:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet" />
+
 
       {page === "home" && <HomePage books={books} setPage={setPage} t={t} user={user} setBooks={setBooks} setModal={setModal} showToast={showToast} />}
       {page === "search" && <SearchPage onBack={()=>setPage("home")} user={user} setBooks={setBooks} books={books} showToast={showToast} />}
@@ -3320,7 +3266,6 @@ export default function App() {
 
       {/* Toast notification */}
       {toast && <div style={{ position:"fixed", top:20, left:"50%", transform:"translateX(-50%)", background:toast.type==="success"?"rgba(60,120,60,0.95)":"rgba(180,60,60,0.95)", color:"#fff", padding:"12px 24px", borderRadius:8, fontSize:14, fontFamily:"'EB Garamond', serif", zIndex:2000, boxShadow:"0 8px 32px rgba(0,0,0,0.5)", animation:"fadeIn 0.3s" }}>{toast.msg}</div>}
-      <style>{`@keyframes fadeIn { from { opacity:0; transform:translateX(-50%) translateY(-10px); } to { opacity:1; transform:translateX(-50%) translateY(0); } }`}</style>
 
       <ThemedNav page={page} setPage={setPage} t={t} />
     </div>
