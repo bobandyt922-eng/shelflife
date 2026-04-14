@@ -20,6 +20,7 @@ import {
   dbSearchBooks, dbSearchUserCollection, dbSearchReportedTitles,
   dbGetFollowSnapshot, dbGetFollowerCounts, dbGetFollowingCollectors,
   dbFollowCollector, dbUnfollowCollector,
+  dbGetUserPublishers,
 } from "../lib/db";
 
 /* Unused sample data kept for reference but not loaded into the app */
@@ -656,7 +657,7 @@ function SearchPage({ onBack, onAddBook, user, setBooks, books, showToast }) {
       {/* Add Form Modal */}
       {showAddForm && (
         <Modal onClose={() => setShowAddForm(null)}>
-          <BookForm book={showAddForm} onSave={handleSave} onCancel={() => setShowAddForm(null)} />
+          <BookForm book={showAddForm} onSave={handleSave} onCancel={() => setShowAddForm(null)} userId={user?.id} />
         </Modal>
       )}
     </div>
@@ -930,7 +931,7 @@ function ShelfPage({ books, setBooks, modal, setModal, t, user, setPage, showToa
       {filtered.length===0&&<p style={{ color:"#444", textAlign:"center", padding:40 }}>No books found.</p>}
       </>}
 
-      {modal?.type==="edit"&&<Modal onClose={()=>setModal(null)}><BookForm book={modal.book} isEdit onSave={handleSave} onCancel={()=>setModal(null)} /></Modal>}
+      {modal?.type==="edit"&&<Modal onClose={()=>setModal(null)}><BookForm book={modal.book} isEdit onSave={handleSave} onCancel={()=>setModal(null)} userId={user?.id} /></Modal>}
       {modal?.type==="detail"&&!confirmDel&&<Modal onClose={()=>setModal(null)}><DetailView book={modal.book} user={user} onEdit={()=>setModal({type:"edit",book:modal.book})} onDelete={()=>setConfirmDel(modal.book.id)} onClose={()=>setModal(null)} onUpdateCover={async (bookId, url) => {
         await dbUpdateBook(bookId, { ...modal.book, coverUrl: url }, user?.id);
         setBooks(p => p.map(b => b.id === bookId ? { ...b, coverUrl: url } : b));
@@ -941,13 +942,18 @@ function ShelfPage({ books, setBooks, modal, setModal, t, user, setPage, showToa
   );
 }
 
-function BookForm({ book, onSave, onCancel, isEdit }) {
+function BookForm({ book, onSave, onCancel, isEdit, userId }) {
   const [f, setF] = useState(()=>book?{...book}:{...emptyBook}); const s=(k,v)=>setF(p=>({...p,[k]:v})); const valid=f.title.trim()&&f.author.trim();
   const [searchingCover, setSearchingCover] = useState(false);
   const [coverOptions, setCoverOptions] = useState([]);
   const [estimating, setEstimating] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
+  const [userPublishers, setUserPublishers] = useState([]);
+
+  useEffect(() => {
+    if (userId) dbGetUserPublishers(userId).then(setUserPublishers);
+  }, [userId]);
 
   const searchCover = async () => {
     if (!f.title.trim()) return;
@@ -1091,7 +1097,17 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
         ) : (
           <select style={selectBase} value={f.publisher} onChange={e=>{if(e.target.value==="__custom__")s("publisher","__custom__");else s("publisher",e.target.value);}}>
             <option value="">Select...</option>
-            {PUBLISHERS.filter(p=>p!=="Other").map(p=><option key={p}>{p}</option>)}
+            {(() => {
+              const builtIn = PUBLISHERS.filter(p => p !== "Other");
+              const custom = userPublishers.filter(p => !builtIn.includes(p));
+              return (
+                <>
+                  {builtIn.map(p => <option key={p}>{p}</option>)}
+                  {custom.length > 0 && <option disabled>── Your Publishers ──</option>}
+                  {custom.map(p => <option key={`custom-${p}`}>{p}</option>)}
+                </>
+              );
+            })()}
             <option value="__custom__">+ Add Other Publisher</option>
           </select>
         )}
