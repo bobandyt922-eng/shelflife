@@ -87,12 +87,90 @@ const toPriceNumber = (value) => {
 };
 
 const normalizeText = (value) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const EDITION_CLASSES = [
+  { key: "lettered", terms: ["lettered", "letter ed", "roman numeral"] },
+  { key: "numbered", terms: ["numbered", "numbered edition", "limited numbered"] },
+  { key: "traycased", terms: ["traycased", "traycase", "slipcased", "slipcase"] },
+  { key: "deluxe", terms: ["deluxe", "ultra deluxe", "artist edition"] },
+  { key: "gift", terms: ["gift edition"] },
+  { key: "first", terms: ["first edition", "first printing", "1st edition", "1st printing"] },
+  { key: "arc-proof", terms: ["arc", "proof", "galley", "uncorrected proof"] },
+  { key: "paperback", terms: ["paperback", "mass market", "trade paperback"] },
+  { key: "hardcover", terms: ["hardcover"] },
+];
 
 const includesNormalized = (source, target) => {
   const t = normalizeText(target);
   if (!t) return true;
   return normalizeText(source).includes(t);
 };
+
+const getEditionClass = (value) => {
+  const text = normalizeText(value);
+  if (!text) return "";
+  for (const group of EDITION_CLASSES) {
+    if (group.terms.some(term => text.includes(term))) return group.key;
+  }
+  return "";
+};
+
+const isRelatedEditionClass = (targetClass, candidateClass) => {
+  if (!targetClass || !candidateClass) return false;
+  if (targetClass === candidateClass) return true;
+  const related = {
+    lettered: ["traycased", "deluxe"],
+    numbered: ["traycased", "deluxe"],
+    traycased: ["lettered", "numbered", "deluxe"],
+    deluxe: ["traycased", "lettered", "numbered"],
+    gift: ["hardcover"],
+  };
+  return (related[targetClass] || []).includes(candidateClass);
+};
+
+const getEditionMatchType = (targetEdition, candidateEdition) => {
+  const targetClass = getEditionClass(targetEdition);
+  if (!targetClass) return "any";
+  const candidateClass = getEditionClass(candidateEdition);
+  if (!candidateClass) return "unknown";
+  if (candidateClass === targetClass) return "strict";
+  if (isRelatedEditionClass(targetClass, candidateClass)) return "related";
+  return "mismatch";
+};
+
+const pickEditionScopedPoints = (points, targetEdition) => {
+  if (!targetEdition) return points;
+  const strict = points.filter(p => p.matchType === "strict");
+  const related = points.filter(p => p.matchType === "related");
+  const unknown = points.filter(p => p.matchType === "unknown");
+  if (strict.length >= 2) return strict;
+  if (strict.length === 1) return [...strict, ...related.slice(0, 2), ...unknown.slice(0, 1)];
+  if (related.length >= 2) return related;
+  if (strict.length + related.length > 0) return [...strict, ...related, ...unknown.slice(0, 1)];
+  return [];
+};
+
+function buildMarketPricePoints({ communityData = [], collectionData = [], ebayData = [], targetEdition = "" }) {
+  const rawPoints = [
+    ...communityData.map(item => ({
+      price: toPriceNumber(item.price),
+      source: "reports",
+      matchType: item.matchType || getEditionMatchType(targetEdition, item.edition),
+    })),
+    ...collectionData.map(item => ({
+      price: toPriceNumber(item.value),
+      source: "shelves",
+      matchType: item.matchType || getEditionMatchType(targetEdition, item.edition),
+    })),
+    ...ebayData.map(item => ({
+      price: toPriceNumber(item.price),
+      source: "ebay",
+      matchType: item.matchType || getEditionMatchType(targetEdition, item.title),
+    })),
+  ].filter(point => point.price !== null);
+
+  if (!targetEdition) return rawPoints;
+  return pickEditionScopedPoints(rawPoints, targetEdition);
+}
 
 const quantile = (sorted, q) => {
   if (sorted.length === 0) return 0;
@@ -103,16 +181,10 @@ const quantile = (sorted, q) => {
   return sorted[base];
 };
 
-function calculateMarketStats({ communityPrices = [], collectionPrices = [], ebayPrices = [] }) {
-  const sourcePoints = [
-    ...communityPrices.map(price => ({ price: toPriceNumber(price), source: "reports" })),
-    ...collectionPrices.map(price => ({ price: toPriceNumber(price), source: "shelves" })),
-    ...ebayPrices.map(price => ({ price: toPriceNumber(price), source: "ebay" })),
-  ].filter(p => p.price !== null);
+function calculateMarketStats(pricePoints = []) {
+  if (pricePoints.length === 0) return { hasData: false, avg: 0, low: 0, high: 0, count: 0 };
 
-  if (sourcePoints.length === 0) return { hasData: false, avg: 0, low: 0, high: 0, count: 0 };
-
-  const sorted = sourcePoints.map(p => p.price).sort((a, b) => a - b);
+  const sorted = pricePoints.map(p => p.price).sort((a, b) => a - b);
   let filtered = sorted;
   if (sorted.length >= 4) {
     const q1 = quantile(sorted, 0.25);
@@ -448,7 +520,10 @@ async function dbGetCollectionValues(title, { author = "", edition = "", publish
   const { data, error } = await query;
   if (error) { console.error("Collection values error:", error); return []; }
   return (data || [])
-    .filter(row => includesNormalized(row.edition_type, edition) && includesNormalized(row.publisher, publisher))
+    .filter(row => {
+      const matchType = getEditionMatchType(edition, row.edition_type);
+      return matchType !== "mismatch" && includesNormalized(row.publisher, publisher);
+    })
     .map(row => ({
     value: Number(row.current_value),
     paid: row.purchase_price ? Number(row.purchase_price) : null,
@@ -456,6 +531,7 @@ async function dbGetCollectionValues(title, { author = "", edition = "", publish
     publisher: row.publisher || "",
     condition: row.condition || "",
     user: row.profiles?.display_name || "Anonymous",
+    matchType: getEditionMatchType(edition, row.edition_type),
   }));
 }
 
@@ -513,7 +589,10 @@ async function dbGetPriceReports(title, { author = "", edition = "", publisher =
   const { data, error } = await query;
   if (error) { console.error("Get price reports error:", error); return []; }
   return (data || [])
-    .filter(row => includesNormalized(row.edition_type, edition) && includesNormalized(row.publisher, publisher))
+    .filter(row => {
+      const matchType = getEditionMatchType(edition, row.edition_type);
+      return matchType !== "mismatch" && includesNormalized(row.publisher, publisher);
+    })
     .map(row => ({
     price: Number(row.sale_price),
     source: row.sale_source || "Unknown",
@@ -523,6 +602,7 @@ async function dbGetPriceReports(title, { author = "", edition = "", publisher =
     notes: row.notes || "",
     user: row.profiles?.display_name || "Anonymous",
     date: new Date(row.created_at).toLocaleDateString("en-US", { month:"short", day:"numeric", year:"numeric" }),
+    matchType: getEditionMatchType(edition, row.edition_type),
   }));
 }
 
@@ -1590,8 +1670,6 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
       dbGetPriceReports(f.title, lookup),
       dbGetCollectionValues(f.title, lookup),
     ]);
-    const communityPrices = reports.map(r => r.price);
-    const collectionPrices = collectionVals.map(c => c.value);
     // Get eBay data
     let ebayPrices = [];
     try {
@@ -1601,9 +1679,15 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
       if (f.editionType) params.set("edition", f.editionType);
       const resp = await fetch(`/api/ebay?${params.toString()}`);
       const data = await resp.json();
-      if (data.results) ebayPrices = data.results.map(r => r.price);
+      if (data.results) ebayPrices = data.results;
     } catch(e) {}
-    const stats = calculateMarketStats({ communityPrices, collectionPrices, ebayPrices });
+    const points = buildMarketPricePoints({
+      communityData: reports,
+      collectionData: collectionVals,
+      ebayData: ebayPrices,
+      targetEdition: f.editionType,
+    });
+    const stats = calculateMarketStats(points);
     if (stats.hasData) s("currentValue", String(stats.avg));
     setEstimating(false);
   };
@@ -1734,10 +1818,13 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
     </div>
   );
 
-  const communityPrices = communityData.map(c => c.price);
-  const collectionPrices = collectionData.map(c => c.value);
-  const ebayPrices = ebayData.map(e => e.price);
-  const stats = calculateMarketStats({ communityPrices, collectionPrices, ebayPrices });
+  const points = buildMarketPricePoints({
+    communityData,
+    collectionData,
+    ebayData,
+    targetEdition: edition,
+  });
+  const stats = calculateMarketStats(points);
   const hasData = stats.hasData;
   const avg = stats.avg;
   const low = stats.low;
@@ -1758,7 +1845,9 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
           <div style={{ fontSize:9, color:gold, textTransform:"uppercase", letterSpacing:2, fontFamily:"'Cinzel', serif", marginBottom:6 }}>Estimated Value</div>
           <div style={{ fontSize:36, fontFamily:"'Cinzel', serif", color:gold }}>${avg.toLocaleString()}</div>
           <div style={{ fontSize:12, color:"#666", marginTop:4 }}>Range: ${low.toLocaleString()} \u2014 ${high.toLocaleString()}</div>
-          <div style={{ fontSize:10, color:"#444", marginTop:4 }}>Based on {stats.count} data point{stats.count !== 1 ? "s" : ""} (shelves + reports + eBay)</div>
+          <div style={{ fontSize:10, color:"#444", marginTop:4 }}>
+            Based on {stats.count} {edition ? "edition-matched " : ""}data point{stats.count !== 1 ? "s" : ""} (shelves + reports + eBay)
+          </div>
         </div>
       ) : (
         <div style={{ background:"linear-gradient(135deg, #1a1510, #111)", border:`1px solid ${borderClr}`, borderRadius:10, padding:"18px 20px", marginBottom:16, textAlign:"center" }}>
@@ -1784,6 +1873,11 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
                   <span style={{ color:"#e0d6c8", fontFamily:"'Cinzel', serif", fontSize:14 }}>${e.price.toLocaleString()}</span>
                   {e.condition && <span style={{ color:"#555", fontSize:9 }}>{e.condition}</span>}
                   <span style={{ fontSize:8, color:"#333", background:"#1a1a1a", padding:"1px 4px", borderRadius:2 }}>Match: {e.score}%</span>
+                  {edition && e.matchType && e.matchType !== "any" && (
+                    <span style={{ fontSize:8, color:e.matchType === "strict" ? "#6a6" : "#888", border:`1px solid ${e.matchType === "strict" ? "#2f5" : "#666"}50`, padding:"1px 4px", borderRadius:2 }}>
+                      {e.matchType === "strict" ? "Edition Match" : e.matchType === "related" ? "Related Edition" : "Edition Unknown"}
+                    </span>
+                  )}
                 </div>
                 <div style={{ fontSize:10, color:"#444", marginTop:2, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{e.title}</div>
               </div>

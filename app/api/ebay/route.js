@@ -5,6 +5,17 @@ const EBAY_CERT_ID = process.env.EBAY_CERT_ID;
 
 let cachedToken = null;
 let tokenExpiry = 0;
+const EDITION_CLASS_RULES = [
+  { key: "lettered", terms: ["lettered", "letter ed", "roman numeral"] },
+  { key: "numbered", terms: ["numbered", "numbered edition", "limited numbered"] },
+  { key: "traycased", terms: ["traycased", "traycase", "slipcased", "slipcase"] },
+  { key: "deluxe", terms: ["deluxe", "ultra deluxe", "artist edition"] },
+  { key: "gift", terms: ["gift edition"] },
+  { key: "first", terms: ["first edition", "first printing", "1st edition", "1st printing"] },
+  { key: "arc-proof", terms: ["arc", "proof", "galley", "uncorrected proof"] },
+  { key: "paperback", terms: ["paperback", "mass market", "trade paperback"] },
+  { key: "hardcover", terms: ["hardcover"] },
+];
 
 async function getEbayToken() {
   if (cachedToken && Date.now() < tokenExpiry) return cachedToken;
@@ -92,15 +103,32 @@ export async function GET(request) {
       const condition = item.condition || "";
       const imageUrl = item.thumbnailImages?.[0]?.imageUrl || item.image?.imageUrl || "";
       const listingUrl = item.itemWebUrl || "";
+      const matchType = getEditionMatchType(edition, itemTitle);
 
       const score = calculateMatchScore(itemTitle, title, author, publisher, edition);
 
-      return { title: itemTitle, price, condition, imageUrl, listingUrl, score, date: "Active" };
+      return { title: itemTitle, price, condition, imageUrl, listingUrl, score, matchType, date: "Active" };
     });
 
     const minScore = edition ? 35 : 28;
-    const filtered = removePriceOutliers(scored
-      .filter(item => item.score >= minScore && item.price > 0))
+    let filteredCandidates = scored.filter(item => item.score >= minScore && item.price > 0);
+    if (edition.trim()) {
+      const strict = filteredCandidates.filter(item => item.matchType === "strict");
+      const related = filteredCandidates.filter(item => item.matchType === "related");
+      const unknown = filteredCandidates.filter(item => item.matchType === "unknown");
+      if (strict.length >= 2) {
+        filteredCandidates = strict;
+      } else if (strict.length === 1) {
+        filteredCandidates = [...strict, ...related.slice(0, 2), ...unknown.slice(0, 1)];
+      } else if (related.length >= 2) {
+        filteredCandidates = related;
+      } else if (strict.length + related.length > 0) {
+        filteredCandidates = [...strict, ...related, ...unknown.slice(0, 1)];
+      } else {
+        filteredCandidates = [];
+      }
+    }
+    const filtered = removePriceOutliers(filteredCandidates)
       .sort((a, b) => b.score - a.score)
       .slice(0, 15);
 
@@ -149,23 +177,12 @@ function calculateMatchScore(listingTitle, bookTitle, author, publisher, edition
     }
   }
 
-  // Edition matching (0-20 points)
+  // Edition matching (roughly -25 to +20 points)
   if (edition) {
-    const editionTerms = {
-      "lettered": ["lettered", "letter ed"],
-      "numbered": ["numbered", "limited", "/500", "/750", "/1000", "/250", "/350"],
-      "traycased": ["traycase", "traycased"],
-      "deluxe": ["deluxe", "dlx"],
-      "first edition": ["first edition", "1st edition", "1st ed", "1st/1st", "first printing"],
-      "signed": ["signed", "autograph", "autographed"],
-    };
-    const el = edition.toLowerCase();
-    for (const [key, terms] of Object.entries(editionTerms)) {
-      if (el.includes(key)) {
-        if (terms.some(t => lt.includes(t))) score += 20;
-        break;
-      }
-    }
+    const editionMatch = getEditionMatchType(edition, listingTitle);
+    if (editionMatch === "strict") score += 20;
+    else if (editionMatch === "related") score += 10;
+    else if (editionMatch === "mismatch") score -= 25;
   }
 
   // Book-related bonus
@@ -189,15 +206,52 @@ function calculateMatchScore(listingTitle, bookTitle, author, publisher, edition
 }
 
 function getEditionSearchTerms(edition) {
-  const e = (edition || "").toLowerCase();
-  if (!e) return [];
-  if (e.includes("lettered")) return ["lettered"];
-  if (e.includes("numbered")) return ["numbered"];
-  if (e.includes("traycased")) return ["traycased"];
-  if (e.includes("deluxe")) return ["deluxe"];
-  if (e.includes("first edition") || e.includes("first printing")) return ["first edition"];
-  if (e.includes("signed")) return ["signed"];
+  const c = getEditionClass(edition);
+  if (!c) return edition ? [edition] : [];
+  if (c === "lettered") return ["lettered", "signed limited", "traycased"];
+  if (c === "numbered") return ["numbered", "limited", "traycased"];
+  if (c === "traycased") return ["traycased", "slipcased", "limited"];
+  if (c === "deluxe") return ["deluxe", "traycased"];
+  if (c === "gift") return ["gift edition", "limited"];
+  if (c === "first") return ["first edition", "first printing"];
+  if (c === "arc-proof") return ["arc", "proof", "galley"];
   return [edition];
+}
+
+function normalizeText(value) {
+  return (value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function getEditionClass(value) {
+  const text = normalizeText(value);
+  if (!text) return "";
+  for (const group of EDITION_CLASS_RULES) {
+    if (group.terms.some(term => text.includes(term))) return group.key;
+  }
+  return "";
+}
+
+function isRelatedEditionClass(targetClass, candidateClass) {
+  if (!targetClass || !candidateClass) return false;
+  if (targetClass === candidateClass) return true;
+  const related = {
+    lettered: ["traycased", "deluxe"],
+    numbered: ["traycased", "deluxe"],
+    traycased: ["lettered", "numbered", "deluxe"],
+    deluxe: ["traycased", "lettered", "numbered"],
+    gift: ["hardcover"],
+  };
+  return (related[targetClass] || []).includes(candidateClass);
+}
+
+function getEditionMatchType(targetEdition, candidateText) {
+  const targetClass = getEditionClass(targetEdition);
+  if (!targetClass) return "any";
+  const candidateClass = getEditionClass(candidateText);
+  if (!candidateClass) return "unknown";
+  if (candidateClass === targetClass) return "strict";
+  if (isRelatedEditionClass(targetClass, candidateClass)) return "related";
+  return "mismatch";
 }
 
 function removePriceOutliers(items) {
