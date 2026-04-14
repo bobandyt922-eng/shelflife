@@ -55,12 +55,40 @@ async function searchEbay(token, query) {
   return data.itemSummaries || [];
 }
 
+async function searchEbaySold(query) {
+  const ebayUrl = new URL("https://svcs.ebay.com/services/search/FindingService/v1");
+  ebayUrl.searchParams.set("OPERATION-NAME", "findCompletedItems");
+  ebayUrl.searchParams.set("SERVICE-VERSION", "1.13.0");
+  ebayUrl.searchParams.set("SECURITY-APPNAME", EBAY_APP_ID);
+  ebayUrl.searchParams.set("RESPONSE-DATA-FORMAT", "JSON");
+  ebayUrl.searchParams.set("REST-PAYLOAD", "");
+  ebayUrl.searchParams.set("GLOBAL-ID", "EBAY-US");
+  ebayUrl.searchParams.set("keywords", query);
+  ebayUrl.searchParams.set("paginationInput.entriesPerPage", "40");
+  ebayUrl.searchParams.set("itemFilter(0).name", "SoldItemsOnly");
+  ebayUrl.searchParams.set("itemFilter(0).value", "true");
+
+  const resp = await fetch(ebayUrl.toString());
+  if (!resp.ok) return [];
+  const data = await resp.json();
+  const items = data?.findCompletedItemsResponse?.[0]?.searchResult?.[0]?.item || [];
+  return items.map(item => ({
+    itemId: item?.itemId?.[0] || item?.title?.[0] || "",
+    title: item?.title?.[0] || "",
+    price: { value: item?.sellingStatus?.[0]?.currentPrice?.[0]?.__value__ || "0" },
+    condition: item?.condition?.[0]?.conditionDisplayName?.[0] || "",
+    itemWebUrl: item?.viewItemURL?.[0] || "",
+    soldDate: item?.listingInfo?.[0]?.endTime?.[0] || "",
+  }));
+}
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const title = searchParams.get("title") || "";
   const author = searchParams.get("author") || "";
   const publisher = searchParams.get("publisher") || "";
   const edition = searchParams.get("edition") || "";
+  const mode = (searchParams.get("mode") || "sold").toLowerCase() === "active" ? "active" : "sold";
 
   if (!title.trim()) {
     return NextResponse.json({ error: "Title is required", results: [] });
@@ -86,7 +114,7 @@ export async function GET(request) {
     ].map(q => q.trim()).filter(Boolean);
 
     // Run searches in parallel
-    const allResults = await Promise.all(queries.map(q => searchEbay(token, q)));
+    const allResults = await Promise.all(queries.map(q => mode === "sold" ? searchEbaySold(q) : searchEbay(token, q)));
 
     // Merge and deduplicate by item ID or title
     const seen = new Set();
@@ -104,10 +132,13 @@ export async function GET(request) {
       const imageUrl = item.thumbnailImages?.[0]?.imageUrl || item.image?.imageUrl || "";
       const listingUrl = item.itemWebUrl || "";
       const matchType = getEditionMatchType(edition, itemTitle);
+      const soldDate = item.soldDate
+        ? new Date(item.soldDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+        : "";
 
       const score = calculateMatchScore(itemTitle, title, author, publisher, edition);
 
-      return { title: itemTitle, price, condition, imageUrl, listingUrl, score, matchType, date: "Active" };
+      return { title: itemTitle, price, condition, imageUrl, listingUrl, score, matchType, date: soldDate || (mode === "sold" ? "Sold" : "Active") };
     });
 
     const minScore = edition ? 35 : 28;
@@ -135,6 +166,7 @@ export async function GET(request) {
     return NextResponse.json({
       results: filtered,
       queries,
+      mode,
       totalRaw: merged.length,
       totalFiltered: filtered.length,
     });

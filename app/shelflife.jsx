@@ -98,6 +98,7 @@ const EDITION_CLASSES = [
   { key: "paperback", terms: ["paperback", "mass market", "trade paperback"] },
   { key: "hardcover", terms: ["hardcover"] },
 ];
+const MIN_STRICT_COMPS_FOR_HIGH = 2;
 
 const includesNormalized = (source, target) => {
   const t = normalizeText(target);
@@ -137,9 +138,10 @@ const getEditionMatchType = (targetEdition, candidateEdition) => {
   return "mismatch";
 };
 
-const pickEditionScopedPoints = (points, targetEdition) => {
+const pickEditionScopedPoints = (points, targetEdition, { strictOnly = false } = {}) => {
   if (!targetEdition) return points;
   const strict = points.filter(p => p.matchType === "strict");
+  if (strictOnly) return strict;
   const related = points.filter(p => p.matchType === "related");
   const unknown = points.filter(p => p.matchType === "unknown");
   if (strict.length >= 2) return strict;
@@ -149,7 +151,7 @@ const pickEditionScopedPoints = (points, targetEdition) => {
   return [];
 };
 
-function buildMarketPricePoints({ communityData = [], collectionData = [], ebayData = [], targetEdition = "" }) {
+function buildMarketPricePoints({ communityData = [], collectionData = [], ebayData = [], targetEdition = "", strictEditionOnly = false }) {
   const rawPoints = [
     ...communityData.map(item => ({
       price: toPriceNumber(item.price),
@@ -169,7 +171,7 @@ function buildMarketPricePoints({ communityData = [], collectionData = [], ebayD
   ].filter(point => point.price !== null);
 
   if (!targetEdition) return rawPoints;
-  return pickEditionScopedPoints(rawPoints, targetEdition);
+  return pickEditionScopedPoints(rawPoints, targetEdition, { strictOnly: strictEditionOnly });
 }
 
 const quantile = (sorted, q) => {
@@ -206,7 +208,7 @@ function calculateMarketStats(pricePoints = []) {
   };
 }
 
-function calculateConfidence(pricePoints = [], targetEdition = "") {
+function calculateConfidence(pricePoints = [], targetEdition = "", { strictEditionOnly = false } = {}) {
   if (pricePoints.length === 0) {
     return {
       label: "Low",
@@ -229,11 +231,18 @@ function calculateConfidence(pricePoints = [], targetEdition = "") {
   const strictCount = pricePoints.filter(p => p.matchType === "strict").length;
   const relatedCount = pricePoints.filter(p => p.matchType === "related").length;
 
-  if (strictCount >= 3 && sourceCount >= 2) {
+  if (strictCount >= MIN_STRICT_COMPS_FOR_HIGH && sourceCount >= 2) {
     return { label: "High", color: "#6a6", detail: `${strictCount} strict edition matches across ${sourceCount} sources.` };
   }
   if (strictCount >= 2 || (strictCount >= 1 && relatedCount >= 1)) {
     return { label: "Medium", color: "#b99a5a", detail: `${strictCount} strict + ${relatedCount} related edition matches.` };
+  }
+  if (strictEditionOnly) {
+    return {
+      label: "Low",
+      color: "#c77",
+      detail: strictCount > 0 ? "Strict-only mode has very few exact comps." : "Strict-only mode found no exact edition comps.",
+    };
   }
   return {
     label: "Low",
@@ -1810,7 +1819,7 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
   </div>);
 }
 
-function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
+function PriceCheckPanel({ title, author, edition, publisher, onClose, user, strictEditionOnly = false, ebayMode = "sold" }) {
   const [loading, setLoading] = useState(true);
   const [communityData, setCommunityData] = useState([]);
   const [collectionData, setCollectionData] = useState([]);
@@ -1835,6 +1844,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
     if (author) params.set("author", author);
     if (publisher) params.set("publisher", publisher);
     if (edition) params.set("edition", edition);
+    params.set("mode", ebayMode);
     fetch(`/api/ebay?${params.toString()}`)
       .then(r => r.json())
       .then(data => {
@@ -1843,7 +1853,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
         setEbayLoading(false);
       })
       .catch(e => { setEbayError("Failed to connect: " + e.message); setEbayLoading(false); });
-  }, [title, author, edition, publisher]);
+  }, [title, author, edition, publisher, ebayMode]);
 
   if (loading && ebayLoading) return (
     <div style={{ padding: "40px 0", textAlign: "center" }}>
@@ -1859,9 +1869,10 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
     collectionData,
     ebayData,
     targetEdition: edition,
+    strictEditionOnly,
   });
   const stats = calculateMarketStats(points);
-  const confidence = calculateConfidence(points, edition);
+  const confidence = calculateConfidence(points, edition, { strictEditionOnly });
   const hasData = stats.hasData;
   const avg = stats.avg;
   const low = stats.low;
@@ -1889,6 +1900,9 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
             <span style={{ fontSize:9, color:confidence.color, fontFamily:"'Cinzel', serif", letterSpacing:1.2, textTransform:"uppercase" }}>Confidence: {confidence.label}</span>
             <span style={{ fontSize:9, color:"#666" }}>{confidence.detail}</span>
           </div>
+          {edition && strictEditionOnly && (
+            <div style={{ fontSize:9, color:"#777", marginTop:6 }}>Strict-only mode enabled (exact edition comps only).</div>
+          )}
         </div>
       ) : (
         <div style={{ background:"linear-gradient(135deg, #1a1510, #111)", border:`1px solid ${borderClr}`, borderRadius:10, padding:"18px 20px", marginBottom:16, textAlign:"center" }}>
@@ -1900,7 +1914,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
       <div style={{ marginBottom:16 }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>eBay Listings</div>
-          {ebayLoading ? <span style={{ fontSize:10, color:"#555" }}>Loading...</span> : <span style={{ fontSize:10, color:"#444" }}>{ebayData.length} listing{ebayData.length !== 1 ? "s" : ""}</span>}
+          {ebayLoading ? <span style={{ fontSize:10, color:"#555" }}>Loading...</span> : <span style={{ fontSize:10, color:"#444" }}>{ebayData.length} {ebayMode === "sold" ? "sold comp" : "listing"}{ebayData.length !== 1 ? "s" : ""}</span>}
         </div>
         {ebayLoading ? (
           <div style={{ padding:"12px", textAlign:"center" }}><div style={{ width:16, height:16, border:"2px solid #333", borderTopColor:"#c4a265", borderRadius:"50%", animation:"spin 0.8s linear infinite", margin:"0 auto" }} /></div>
@@ -2165,6 +2179,8 @@ function MarketPage({ setModal, t, user }) {
   const [searchResults, setSearchResults] = useState([]);
   const [marketFeed, setMarketFeed] = useState([]);
   const [searching, setSearching] = useState(false);
+  const [strictEditionOnly, setStrictEditionOnly] = useState(false);
+  const [ebayMode, setEbayMode] = useState("sold");
   const searchTimer = useRef(null);
   const searchToken = useRef(0);
 
@@ -2233,6 +2249,35 @@ function MarketPage({ setModal, t, user }) {
     <div style={{ background:cardBg, border:`1px solid ${gold}20`, borderRadius:10, padding:"16px 18px", marginBottom:20 }}>
       <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif", marginBottom:8 }}>Price Check</div>
       <p style={{ color:"#666", fontSize:12, margin:"0 0 10px" }}>Look up any book's estimated market value</p>
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
+        <button
+          onClick={()=>setStrictEditionOnly(v=>!v)}
+          style={{
+            ...btnSmall,
+            padding:"5px 10px",
+            fontSize:9,
+            borderColor: strictEditionOnly ? `${gold}70` : borderClr,
+            color: strictEditionOnly ? gold : "#666",
+            background: strictEditionOnly ? `${gold}14` : "transparent",
+          }}
+        >
+          {strictEditionOnly ? "Strict Edition: On" : "Strict Edition: Off"}
+        </button>
+        <div style={{ display:"inline-flex", border:`1px solid ${borderClr}`, borderRadius:6, overflow:"hidden" }}>
+          <button
+            onClick={()=>setEbayMode("sold")}
+            style={{ background:ebayMode==="sold"?`${gold}20`:"transparent", border:"none", color:ebayMode==="sold"?gold:"#666", padding:"5px 10px", cursor:"pointer", fontSize:9, fontFamily:"'Cinzel', serif", letterSpacing:0.8 }}
+          >
+            Sold Comps
+          </button>
+          <button
+            onClick={()=>setEbayMode("active")}
+            style={{ background:ebayMode==="active"?`${gold}20`:"transparent", border:"none", borderLeft:`1px solid ${borderClr}`, color:ebayMode==="active"?gold:"#666", padding:"5px 10px", cursor:"pointer", fontSize:9, fontFamily:"'Cinzel', serif", letterSpacing:0.8 }}
+          >
+            Active Listings
+          </button>
+        </div>
+      </div>
       <div style={{ position:"relative" }}>
         <input style={{ ...inputBase, fontSize:14, padding:"10px 38px 10px 14px" }} placeholder="Search title or author..." value={priceSearch} onChange={e=>doSearch(e.target.value)} />
         {searching && <div style={{ position:"absolute", right:12, top:"50%", transform:"translateY(-50%)", width:14, height:14, border:"2px solid #333", borderTopColor:gold, borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />}
@@ -2260,6 +2305,8 @@ function MarketPage({ setModal, t, user }) {
           author={priceCheckBook.author || ""}
           edition={priceCheckBook.edition || ""}
           publisher={priceCheckBook.publisher || ""}
+          strictEditionOnly={strictEditionOnly}
+          ebayMode={ebayMode}
           onClose={()=>setPriceCheckBook(null)}
           user={user}
         />
