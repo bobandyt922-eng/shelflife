@@ -3,7 +3,7 @@ import { supabase } from "../lib/supabase";
 import { normalizeText } from "../lib/edition-classes";
 import {
   gold, goldDark, cardBg, borderClr,
-  BOOK_DB, PUBLISHERS, EDITION_TYPES, CONDITIONS, NEW_RELEASES,
+  BOOK_DB, PUBLISHERS, EDITION_TYPES, CONDITIONS,
   btnPrimary, btnGhost, btnDanger, btnSmall, inputBase, selectBase, labelBase,
   emptyBook,
 } from "../lib/constants";
@@ -81,19 +81,6 @@ function PublicHomePage({ onLogin, onSignup, onBrowse }) {
             </div>
           ))}
         </div>
-      </div>
-
-      {/* New Releases */}
-      <div style={{ padding:"0 20px 32px" }}>
-        <SH title="New Releases" sub="From publishers collectors follow" />
-        {NEW_RELEASES.slice(0,3).map(r=>(
-          <div key={r.id} style={{ padding:"12px 0", borderBottom:`1px solid ${borderClr}` }}>
-            <div style={{ display:"flex", justifyContent:"space-between" }}>
-              <div><div style={{ fontFamily:"'Cinzel', serif", fontSize:13, color:"#e0d6c8" }}>{r.title}</div><div style={{ fontSize:12, color:"#555", fontStyle:"italic" }}>{r.author} · {r.publisher}</div></div>
-              <span style={{ fontSize:9, padding:"3px 8px", borderRadius:4, background:r.status==="Available"?"rgba(100,170,100,0.12)":"rgba(196,162,101,0.1)", color:r.status==="Available"?"#6a6":gold, fontFamily:"'Cinzel', serif", alignSelf:"flex-start" }}>{r.status}</span>
-            </div>
-          </div>
-        ))}
       </div>
 
       {/* Pricing Tiers */}
@@ -425,13 +412,6 @@ function HomePage({ books, setPage, t, user, setBooks, setModal, showToast }) {
       <SH title="Market Activity" action={<button onClick={()=>setPage("market")} style={{ ...btnSmall, fontSize:9, padding:"4px 8px" }}>All</button>} />
       {marketFeed.length > 0 ? marketFeed.slice(0,3).map((m,i)=>(<div key={i} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:8, padding:"12px 14px", marginBottom:8, display:"flex", justifyContent:"space-between", alignItems:"center" }}><div><div style={{ fontFamily:"'Cinzel', serif", fontSize:13, color:"#e0d6c8" }}>{m.title}</div><div style={{ fontSize:10, color:"#444" }}>{m.publisher}{m.edition ? ` · ${m.edition}` : ""}</div></div><div style={{ textAlign:"right" }}><div style={{ fontFamily:"'Cinzel', serif", fontSize:16, color:gold }}>${m.price.toLocaleString()}</div><div style={{ fontSize:9, color:"#444" }}>{m.date}</div></div></div>))
       : <p style={{ color:"#444", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>No market activity yet. Be the first to report a sale.</p>}
-
-      <div style={{ marginTop:24 }}>
-        <SH title="New Releases" action={<button onClick={()=>setPage("discover")} style={{ ...btnSmall, fontSize:9, padding:"4px 8px" }}>All</button>} />
-        <div style={{ display:"flex", gap:10, overflowX:"auto", paddingBottom:8 }}>
-          {NEW_RELEASES.map(r=>(<div key={r.id} style={{ minWidth:200, background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"12px 14px", flexShrink:0 }}><div style={{ fontFamily:"'Cinzel', serif", fontSize:12, color:"#e0d6c8" }}>{r.title}</div><div style={{ fontSize:11, color:"#555", fontStyle:"italic" }}>{r.author}</div><div style={{ fontSize:10, color:"#444", marginTop:4 }}>{r.editions}</div><span style={{ display:"inline-block", fontSize:8, marginTop:6, padding:"2px 6px", borderRadius:3, background:r.status==="Available"?"rgba(100,170,100,0.12)":`${gold}15`, color:r.status==="Available"?"#6a6":gold, fontFamily:"'Cinzel', serif" }}>{r.status}</span></div>))}
-        </div>
-      </div>
 
       {/* Community Activity - real data */}
       <div style={{ marginTop:24 }}>
@@ -1889,9 +1869,6 @@ function DiscoverPage({ onViewProfile, userId, showToast }) {
   return (<div style={{ padding:"24px 20px 100px" }}>
     <h2 style={{ fontFamily:"'Cinzel', serif", fontSize:22, color:"#e0d6c8", margin:"0 0 4px" }}>Discover</h2>
     <p style={{ color:"#555", fontSize:12, margin:"0 0 20px", fontStyle:"italic" }}>Releases and community</p>
-
-    <SH title="New Releases" />
-    {NEW_RELEASES.map(r=>(<div key={r.id} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:8 }}><div style={{ display:"flex", justifyContent:"space-between" }}><div><div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{r.title}</div><div style={{ fontSize:12, color:"#555", fontStyle:"italic" }}>{r.author} · {r.publisher}</div><div style={{ fontSize:11, color:"#444", marginTop:4 }}>{r.editions}</div></div><span style={{ fontSize:9, padding:"3px 8px", borderRadius:4, background:r.status==="Available"?"rgba(100,170,100,0.12)":r.status==="Sold Out"?"rgba(200,100,100,0.12)":`${gold}12`, color:r.status==="Available"?"#6a6":r.status==="Sold Out"?"#c66":gold, fontFamily:"'Cinzel', serif", alignSelf:"flex-start" }}>{r.status}</span></div></div>))}
 
     {userId && followAvailable && (
       <div style={{ marginTop:28 }}>
