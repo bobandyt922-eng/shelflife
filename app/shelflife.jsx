@@ -2332,8 +2332,10 @@ export default function App() {
   if (appState === "auth") return <AuthPage mode={authMode} onComplete={(u) => { setUser(u); setAppState("app"); setPage("home"); }} onBack={() => setAppState("public")} onSwitch={() => setAuthMode(m => m === "login" ? "signup" : "login")} />;
   if (appState === "reset") return <ResetPasswordScreen onDone={() => setAppState("app")} />;
 
+  const appClass = `vault-app${lm ? " light" : ""}`;
+
   if (viewingCollector) return (
-    <div className="vault-app" style={{ minHeight:"100vh", fontFamily:"'EB Garamond', serif" }}>
+    <div className={appClass} style={{ minHeight:"100vh", fontFamily:"'EB Garamond', serif" }}>
       <style>{themeStyle}</style>
 
       <PublicProfileView collector={viewingCollector} onBack={() => setViewingCollector(null)} t={t} />
@@ -2342,7 +2344,7 @@ export default function App() {
   );
 
   return (
-    <div className="vault-app" style={{ minHeight:"100vh", fontFamily:"'EB Garamond', serif" }}>
+    <div className={appClass} style={{ minHeight:"100vh", fontFamily:"'EB Garamond', serif" }}>
       <style>{themeStyle}</style>
 
 
