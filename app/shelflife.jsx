@@ -80,6 +80,7 @@ const selectBase = { ...inputBase, appearance:"auto" };
 const labelBase = { display:"block", fontSize:10, textTransform:"uppercase", letterSpacing:2, color:gold, marginBottom:4, fontFamily:"'Cinzel', serif" };
 const emptyBook = { title:"",author:"",publisher:"",editionType:"",limitation:"",condition:"Mint",purchasePrice:"",currentValue:"",notes:"",coverUrl:"" };
 const SHELF_VALUATION_SOURCE = "Shelf Valuation";
+const FOLLOW_TABLE_CANDIDATES = ["collector_follows", "user_follows", "follows"];
 
 const toPriceNumber = (value) => {
   const n = Number(value);
@@ -165,7 +166,7 @@ function buildMarketPricePoints({ communityData = [], collectionData = [], ebayD
     })),
     ...ebayData.map(item => ({
       price: toPriceNumber(item.price),
-      source: "ebay",
+      source: item.marketSource || item.source || "market",
       matchType: item.matchType || getEditionMatchType(targetEdition, item.title),
     })),
   ].filter(point => point.price !== null);
@@ -486,17 +487,18 @@ async function dbLoadProfile(userId) {
     .select("*")
     .eq("id", userId)
     .single();
-  if (error) { console.error("Load profile error:", error); return null; }
-  return data;
+  if (error && error.code !== "PGRST116") { console.error("Load profile error:", error); }
+  return data || null;
 }
 
 async function dbUpdateProfile(userId, updates) {
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("profiles")
-    .update(updates)
-    .eq("id", userId);
-  if (error) { console.error("Update profile error:", error); return false; }
-  return true;
+    .upsert({ id: userId, ...updates }, { onConflict: "id" })
+    .select("*")
+    .single();
+  if (error) { console.error("Update profile error:", error); return null; }
+  return data || null;
 }
 
 /* Community activity DB function */
@@ -518,6 +520,234 @@ async function dbGetCommunityActivity(limit = 10) {
       time: timeAgo,
     };
   });
+}
+
+let cachedFollowTableName = null;
+let attemptedFollowTableResolve = false;
+
+function isMissingFollowTableError(error) {
+  const code = error?.code || "";
+  const msg = String(error?.message || "").toLowerCase();
+  return code === "42P01" || code === "PGRST205" || msg.includes("does not exist") || msg.includes("not found");
+}
+
+async function resolveFollowTableName() {
+  if (attemptedFollowTableResolve) return cachedFollowTableName;
+  attemptedFollowTableResolve = true;
+
+  for (const tableName of FOLLOW_TABLE_CANDIDATES) {
+    const { error } = await supabase
+      .from(tableName)
+      .select("follower_id", { head: true, count: "exact" })
+      .limit(1);
+    if (!error || !isMissingFollowTableError(error)) {
+      cachedFollowTableName = tableName;
+      return cachedFollowTableName;
+    }
+  }
+
+  cachedFollowTableName = null;
+  return null;
+}
+
+async function dbGetFollowerCounts(collectorIds = []) {
+  const ids = [...new Set((collectorIds || []).filter(Boolean))];
+  if (!ids.length) return {};
+  const tableName = await resolveFollowTableName();
+  if (!tableName) return {};
+
+  const { data, error } = await supabase
+    .from(tableName)
+    .select("followed_id")
+    .in("followed_id", ids);
+  if (error) { console.error("Load follower counts error:", error); return {}; }
+
+  const counts = {};
+  for (const id of ids) counts[id] = 0;
+  (data || []).forEach(row => {
+    if (!row.followed_id) return;
+    counts[row.followed_id] = (counts[row.followed_id] || 0) + 1;
+  });
+  return counts;
+}
+
+async function dbGetFollowSnapshot(userId, collectorIds = []) {
+  const tableName = await resolveFollowTableName();
+  if (!tableName) return { available: false, followingIds: [], followerCounts: {} };
+
+  const ids = [...new Set((collectorIds || []).filter(Boolean))];
+  const followerCounts = await dbGetFollowerCounts(ids);
+  let followingIds = [];
+
+  if (userId) {
+    const { data, error } = await supabase
+      .from(tableName)
+      .select("followed_id")
+      .eq("follower_id", userId);
+    if (error) {
+      console.error("Load following list error:", error);
+      return { available: true, followingIds: [], followerCounts };
+    }
+    followingIds = [...new Set((data || []).map(row => row.followed_id).filter(Boolean))];
+  }
+
+  return { available: true, followingIds, followerCounts };
+}
+
+async function dbFollowCollector(userId, collectorId) {
+  if (!userId || !collectorId || userId === collectorId) return false;
+  const tableName = await resolveFollowTableName();
+  if (!tableName) return false;
+
+  const { error } = await supabase
+    .from(tableName)
+    .insert({ follower_id: userId, followed_id: collectorId });
+  if (error && error.code !== "23505") {
+    console.error("Follow collector error:", error);
+    return false;
+  }
+  return true;
+}
+
+async function dbUnfollowCollector(userId, collectorId) {
+  if (!userId || !collectorId) return false;
+  const tableName = await resolveFollowTableName();
+  if (!tableName) return false;
+
+  const { error } = await supabase
+    .from(tableName)
+    .delete()
+    .eq("follower_id", userId)
+    .eq("followed_id", collectorId);
+  if (error) { console.error("Unfollow collector error:", error); return false; }
+  return true;
+}
+
+async function dbGetFollowingCollectors(userId, limit = 24) {
+  if (!userId) return [];
+  const tableName = await resolveFollowTableName();
+  if (!tableName) return [];
+
+  const { data, error } = await supabase
+    .from(tableName)
+    .select("followed_id")
+    .eq("follower_id", userId)
+    .limit(300);
+  if (error) { console.error("Load following collector ids error:", error); return []; }
+
+  const followedIds = [...new Set((data || []).map(row => row.followed_id).filter(Boolean))];
+  if (!followedIds.length) return [];
+
+  const publicCollectors = await dbGetPublicCollectors(120);
+  const byId = {};
+  publicCollectors.forEach(c => { byId[c.id] = c; });
+
+  return followedIds
+    .map(id => byId[id])
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+async function dbGetPublicCollectors(limit = 24) {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, display_name, is_public, show_value")
+    .eq("is_public", true)
+    .limit(limit);
+  if (error) { console.error("Load public collectors error:", error); return []; }
+  const collectors = data || [];
+  if (!collectors.length) return [];
+
+  const ids = collectors.map(c => c.id);
+  const { data: booksData, error: booksError } = await supabase
+    .from("user_collection")
+    .select("user_id, title, author, edition_type, current_value")
+    .in("user_id", ids);
+  if (booksError) { console.error("Load public collector books error:", booksError); return []; }
+
+  const grouped = {};
+  (booksData || []).forEach(row => {
+    if (!grouped[row.user_id]) grouped[row.user_id] = [];
+    grouped[row.user_id].push(row);
+  });
+
+  return collectors
+    .map(c => {
+      const books = grouped[c.id] || [];
+      const totalValue = books.reduce((sum, b) => sum + (Number(b.current_value) || 0), 0);
+      const topBooks = books
+        .sort((a, b) => (Number(b.current_value) || 0) - (Number(a.current_value) || 0))
+        .slice(0, 8)
+        .map(b => ({
+          title: b.title || "Unknown",
+          author: b.author || "",
+          edition: b.edition_type || "",
+          value: Number(b.current_value) || 0,
+        }));
+      const tier = books.length >= 100 ? "Obsidian" : books.length >= 50 ? "Gold" : books.length >= 20 ? "Silver" : "Bronze";
+      return {
+        id: c.id,
+        name: c.display_name || "Collector",
+        booksCount: books.length,
+        totalValue: c.show_value ? totalValue : null,
+        showValue: !!c.show_value,
+        tier,
+        topBooks,
+      };
+    })
+    .filter(c => c.booksCount > 0)
+    .sort((a, b) => b.booksCount - a.booksCount);
+}
+
+async function dbLoadPublicCollectorProfile(collectorId) {
+  const { data: collector, error: collectorError } = await supabase
+    .from("profiles")
+    .select("id, display_name, is_public, show_value")
+    .eq("id", collectorId)
+    .single();
+  if (collectorError && collectorError.code !== "PGRST116") {
+    console.error("Load collector profile error:", collectorError);
+    return null;
+  }
+  if (!collector || !collector.is_public) return null;
+
+  const { data: booksData, error: booksError } = await supabase
+    .from("user_collection")
+    .select("id, title, author, edition_type, publisher, condition, current_value, created_at")
+    .eq("user_id", collectorId)
+    .order("created_at", { ascending: false })
+    .limit(400);
+  if (booksError) { console.error("Load collector shelf error:", booksError); return null; }
+
+  const books = (booksData || []).map(row => ({
+    id: row.id,
+    title: row.title || "Unknown",
+    author: row.author || "",
+    edition: row.edition_type || "",
+    publisher: row.publisher || "",
+    condition: row.condition || "",
+    rankValue: Number(row.current_value) || 0,
+    value: collector.show_value ? (Number(row.current_value) || 0) : null,
+  }));
+
+  const totalValue = books.reduce((sum, b) => sum + b.rankValue, 0);
+  const topBooks = [...books]
+    .sort((a, b) => (b.rankValue || 0) - (a.rankValue || 0))
+    .slice(0, 8);
+  const followerCounts = await dbGetFollowerCounts([collectorId]);
+  const tier = books.length >= 100 ? "Obsidian" : books.length >= 50 ? "Gold" : books.length >= 20 ? "Silver" : "Bronze";
+
+  return {
+    id: collector.id,
+    name: collector.display_name || "Collector",
+    booksCount: books.length,
+    totalValue: collector.show_value ? totalValue : null,
+    showValue: !!collector.show_value,
+    followerCount: followerCounts[collectorId] || 0,
+    tier,
+    topBooks,
+    books,
+  };
 }
 
 /* Recent price reports for market feed */
@@ -653,13 +883,15 @@ async function dbGetPriceReports(title, { author = "", edition = "", publisher =
 
 async function dbSearchBooks(query) {
   const q = query.toLowerCase().trim();
-  if (q.length < 2) return [];
+  const normalizedQuery = normalizeText(query);
+  if (normalizedQuery.length < 2) return [];
+  const wildcardQuery = normalizedQuery.split(" ").filter(Boolean).join("%");
   
   // Search local Supabase database
   const { data, error } = await supabase
     .from("books")
     .select("*")
-    .or(`title.ilike.%${q}%,author.ilike.%${q}%`)
+    .or(`title.ilike.%${wildcardQuery}%,author.ilike.%${wildcardQuery}%`)
     .limit(20);
   const localResults = (data || []).map(row => ({
     title: row.title, author: row.author, year: row.year || "", source: "database",
@@ -695,15 +927,16 @@ async function dbSearchBooks(query) {
 }
 
 async function dbSearchUserCollection(query, userId) {
-  const q = query.toLowerCase().trim();
-  if (q.length < 2) return [];
+  const normalizedQuery = normalizeText(query);
+  if (normalizedQuery.length < 2) return [];
+  const wildcardQuery = normalizedQuery.split(" ").filter(Boolean).join("%");
 
   const { data, error } = await supabase
     .from("user_collection")
-    .select("title, author, publisher, edition_type, user_id, created_at")
-    .or(`title.ilike.%${q}%,author.ilike.%${q}%`)
+    .select("title, author, publisher, edition_type, user_id, created_at, current_value")
+    .or(`title.ilike.%${wildcardQuery}%,author.ilike.%${wildcardQuery}%`)
     .order("created_at", { ascending: false })
-    .limit(30);
+    .limit(80);
   if (error) { console.error("Search user collection error:", error); return []; }
 
   return (data || []).map(row => ({
@@ -711,18 +944,20 @@ async function dbSearchUserCollection(query, userId) {
     author: row.author || "Unknown",
     publisher: row.publisher || "",
     edition: row.edition_type || "",
+    currentValue: row.current_value || null,
     source: userId && row.user_id === userId ? "your-shelf" : "collector-shelf",
   }));
 }
 
 async function dbSearchReportedTitles(query) {
-  const q = query.toLowerCase().trim();
-  if (q.length < 2) return [];
+  const normalizedQuery = normalizeText(query);
+  if (normalizedQuery.length < 2) return [];
+  const wildcardQuery = normalizedQuery.split(" ").filter(Boolean).join("%");
 
   const { data, error } = await supabase
     .from("price_reports")
     .select("title, author, publisher, edition_type, created_at")
-    .or(`title.ilike.%${q}%,author.ilike.%${q}%`)
+    .or(`title.ilike.%${wildcardQuery}%,author.ilike.%${wildcardQuery}%`)
     .order("created_at", { ascending: false })
     .limit(30);
   if (error) { console.error("Search price reports error:", error); return []; }
@@ -1811,7 +2046,7 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
             {estimating ? "..." : "Est."}
           </button>
         </div>
-        {f.currentValue && <div style={{ fontSize:9, color:"#444", marginTop:2 }}>Based on shelves, reports, and eBay data</div>}
+        {f.currentValue && <div style={{ fontSize:9, color:"#444", marginTop:2 }}>Based on shelves, reports, and marketplace data</div>}
       </div>
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Notes</label><textarea style={{ ...inputBase, minHeight:50, resize:"vertical" }} value={f.notes} onChange={e=>s("notes",e.target.value)} /></div>
     </div>
@@ -1819,7 +2054,7 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
   </div>);
 }
 
-function PriceCheckPanel({ title, author, edition, publisher, onClose, user, strictEditionOnly = false, ebayMode = "sold" }) {
+function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
   const [loading, setLoading] = useState(true);
   const [communityData, setCommunityData] = useState([]);
   const [collectionData, setCollectionData] = useState([]);
@@ -1844,7 +2079,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user, str
     if (author) params.set("author", author);
     if (publisher) params.set("publisher", publisher);
     if (edition) params.set("edition", edition);
-    params.set("mode", ebayMode);
+    params.set("mode", "sold");
     fetch(`/api/ebay?${params.toString()}`)
       .then(r => r.json())
       .then(data => {
@@ -1853,14 +2088,14 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user, str
         setEbayLoading(false);
       })
       .catch(e => { setEbayError("Failed to connect: " + e.message); setEbayLoading(false); });
-  }, [title, author, edition, publisher, ebayMode]);
+  }, [title, author, edition, publisher]);
 
   if (loading && ebayLoading) return (
     <div style={{ padding: "40px 0", textAlign: "center" }}>
       <div style={{ width: 28, height: 28, border: "2px solid #333", borderTopColor: "#c4a265", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 16px" }} />
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       <p style={{ fontFamily: "'Cinzel', serif", fontSize: 13, color: "#c4a265", letterSpacing: 1 }}>Checking prices...</p>
-      <p style={{ fontSize: 11, color: "#555", fontStyle: "italic" }}>Scanning eBay listings and community data</p>
+      <p style={{ fontSize: 11, color: "#555", fontStyle: "italic" }}>Scanning marketplace listings and community data</p>
     </div>
   );
 
@@ -1869,10 +2104,10 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user, str
     collectionData,
     ebayData,
     targetEdition: edition,
-    strictEditionOnly,
+    strictEditionOnly: false,
   });
   const stats = calculateMarketStats(points);
-  const confidence = calculateConfidence(points, edition, { strictEditionOnly });
+  const confidence = calculateConfidence(points, edition, { strictEditionOnly: false });
   const hasData = stats.hasData;
   const avg = stats.avg;
   const low = stats.low;
@@ -1894,15 +2129,12 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user, str
           <div style={{ fontSize:36, fontFamily:"'Cinzel', serif", color:gold }}>${avg.toLocaleString()}</div>
           <div style={{ fontSize:12, color:"#666", marginTop:4 }}>Range: ${low.toLocaleString()} \u2014 ${high.toLocaleString()}</div>
           <div style={{ fontSize:10, color:"#444", marginTop:4 }}>
-            Based on {stats.count} {edition ? "edition-matched " : ""}data point{stats.count !== 1 ? "s" : ""} (shelves + reports + eBay)
+            Based on {stats.count} data point{stats.count !== 1 ? "s" : ""} (shelves + reports + marketplace listings)
           </div>
           <div style={{ display:"inline-flex", alignItems:"center", gap:8, marginTop:10, padding:"4px 10px", border:`1px solid ${confidence.color}55`, borderRadius:999 }}>
             <span title="Confidence considers sample size, source diversity, and strict edition match quality." style={{ fontSize:9, color:confidence.color, fontFamily:"'Cinzel', serif", letterSpacing:1.2, textTransform:"uppercase" }}>Confidence: {confidence.label}</span>
             <span style={{ fontSize:9, color:"#666" }}>{confidence.detail}</span>
           </div>
-          {edition && strictEditionOnly && (
-            <div style={{ fontSize:9, color:"#777", marginTop:6 }}>Strict-only mode enabled (exact edition comps only).</div>
-          )}
         </div>
       ) : (
         <div style={{ background:"linear-gradient(135deg, #1a1510, #111)", border:`1px solid ${borderClr}`, borderRadius:10, padding:"18px 20px", marginBottom:16, textAlign:"center" }}>
@@ -1913,8 +2145,12 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user, str
 
       <div style={{ marginBottom:16 }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-          <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>eBay Listings</div>
-          {ebayLoading ? <span style={{ fontSize:10, color:"#555" }}>Loading...</span> : <span style={{ fontSize:10, color:"#444" }}>{ebayData.length} {ebayMode === "sold" ? "sold comp" : "listing"}{ebayData.length !== 1 ? "s" : ""}</span>}
+          <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Marketplace Listings</div>
+          {ebayLoading ? <span style={{ fontSize:10, color:"#555" }}>Loading...</span> : (
+            <span style={{ fontSize:10, color:"#444" }}>
+              {ebayData.length} listing{ebayData.length !== 1 ? "s" : ""}
+            </span>
+          )}
         </div>
         {edition && !ebayLoading && (
           <div style={{ fontSize:9, color:"#555", marginBottom:6 }}>
@@ -1933,6 +2169,11 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user, str
                   <span style={{ color:"#e0d6c8", fontFamily:"'Cinzel', serif", fontSize:14 }}>${e.price.toLocaleString()}</span>
                   {e.condition && <span style={{ color:"#555", fontSize:9 }}>{e.condition}</span>}
                   <span style={{ fontSize:8, color:"#333", background:"#1a1a1a", padding:"1px 4px", borderRadius:2 }}>Match: {e.score}%</span>
+                  {e.sourceLabel && (
+                    <span style={{ fontSize:8, color:"#666", border:"1px solid #4444", padding:"1px 4px", borderRadius:2 }}>
+                      {e.sourceLabel}
+                    </span>
+                  )}
                   {edition && e.matchType && e.matchType !== "any" && (
                     <span
                       title={e.matchType === "strict" ? "Listing explicitly matches your edition class." : e.matchType === "related" ? "Listing is a nearby edition class; useful but less exact." : "Listing lacks clear edition wording."}
@@ -1943,12 +2184,17 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user, str
                   )}
                 </div>
                 <div style={{ fontSize:10, color:"#444", marginTop:2, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{e.title}</div>
+                {e.listingUrl && (
+                  <a href={e.listingUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize:9, color:gold, textDecoration:"none" }}>
+                    View listing ↗
+                  </a>
+                )}
               </div>
               <span style={{ color:"#444", fontSize:9, flexShrink:0, marginLeft:8 }}>{e.date}</span>
             </div>
           ))
         ) : (
-          <p style={{ color:"#555", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>No eBay listings found for this title.</p>
+          <p style={{ color:"#555", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>No marketplace listings found for this title.</p>
         )}
       </div>
 
@@ -2187,8 +2433,6 @@ function MarketPage({ setModal, t, user }) {
   const [searchResults, setSearchResults] = useState([]);
   const [marketFeed, setMarketFeed] = useState([]);
   const [searching, setSearching] = useState(false);
-  const [strictEditionOnly, setStrictEditionOnly] = useState(false);
-  const [ebayMode, setEbayMode] = useState("sold");
   const searchTimer = useRef(null);
   const searchToken = useRef(0);
 
@@ -2236,13 +2480,22 @@ function MarketPage({ setModal, t, user }) {
       const seen = new Set();
       const merged = [];
       [...userShelfResults, ...dbResults, ...reportedResults, ...localResults].forEach(r => {
-        const key = (r.title + "|" + (r.author || "")).toLowerCase();
+        const key = (r.title + "|" + (r.author || "") + "|" + (r.edition || "")).toLowerCase();
         if (!seen.has(key)) {
           seen.add(key);
           merged.push(r);
         }
       });
-      setSearchResults(merged.slice(0, 12));
+      merged.sort((a, b) => {
+        const aOwnShelf = a.source === "your-shelf" ? 1 : 0;
+        const bOwnShelf = b.source === "your-shelf" ? 1 : 0;
+        if (aOwnShelf !== bOwnShelf) return bOwnShelf - aOwnShelf;
+        const aHasValue = a.currentValue ? 1 : 0;
+        const bHasValue = b.currentValue ? 1 : 0;
+        if (aHasValue !== bHasValue) return bHasValue - aHasValue;
+        return 0;
+      });
+      setSearchResults(merged.slice(0, 20));
       setSearching(false);
     }, 280);
   };
@@ -2256,42 +2509,7 @@ function MarketPage({ setModal, t, user }) {
     {/* Price Check Search */}
     <div style={{ background:cardBg, border:`1px solid ${gold}20`, borderRadius:10, padding:"16px 18px", marginBottom:20 }}>
       <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif", marginBottom:8 }}>Price Check</div>
-      <p style={{ color:"#666", fontSize:12, margin:"0 0 10px" }}>Look up any book's estimated market value</p>
-      <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
-        <button
-          onClick={()=>setStrictEditionOnly(v=>!v)}
-          title="Strict On = exact edition comps only. Strict Off = exact + closely related edition comps."
-          style={{
-            ...btnSmall,
-            padding:"5px 10px",
-            fontSize:9,
-            borderColor: strictEditionOnly ? `${gold}70` : borderClr,
-            color: strictEditionOnly ? gold : "#666",
-            background: strictEditionOnly ? `${gold}14` : "transparent",
-          }}
-        >
-          {strictEditionOnly ? "Strict Edition: On" : "Strict Edition: Off"}
-        </button>
-        <div style={{ display:"inline-flex", border:`1px solid ${borderClr}`, borderRadius:6, overflow:"hidden" }}>
-          <button
-            onClick={()=>setEbayMode("sold")}
-            title="Sold Comps = completed/sold listings, usually better for real market value."
-            style={{ background:ebayMode==="sold"?`${gold}20`:"transparent", border:"none", color:ebayMode==="sold"?gold:"#666", padding:"5px 10px", cursor:"pointer", fontSize:9, fontFamily:"'Cinzel', serif", letterSpacing:0.8 }}
-          >
-            Sold Comps
-          </button>
-          <button
-            onClick={()=>setEbayMode("active")}
-            title="Active Listings = current asks, useful for trend but can be optimistic."
-            style={{ background:ebayMode==="active"?`${gold}20`:"transparent", border:"none", borderLeft:`1px solid ${borderClr}`, color:ebayMode==="active"?gold:"#666", padding:"5px 10px", cursor:"pointer", fontSize:9, fontFamily:"'Cinzel', serif", letterSpacing:0.8 }}
-          >
-            Active Listings
-          </button>
-        </div>
-      </div>
-      <p style={{ color:"#555", fontSize:11, margin:"0 0 10px" }}>
-        Strict compares only exact edition class (Lettered vs Numbered vs Traycased). Confidence rises with more exact comps across multiple sources.
-      </p>
+      <p style={{ color:"#666", fontSize:12, margin:"0 0 10px" }}>Search title or author. Books added to collector shelves are included automatically.</p>
       <div style={{ position:"relative" }}>
         <input style={{ ...inputBase, fontSize:14, padding:"10px 38px 10px 14px" }} placeholder="Search title or author..." value={priceSearch} onChange={e=>doSearch(e.target.value)} />
         {searching && <div style={{ position:"absolute", right:12, top:"50%", transform:"translateY(-50%)", width:14, height:14, border:"2px solid #333", borderTopColor:gold, borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />}
@@ -2302,7 +2520,7 @@ function MarketPage({ setModal, t, user }) {
           {searchResults.map((r,i)=>(
             <div key={i} onClick={()=>{setPriceCheckBook(r);setSearchResults([]);setPriceSearch("");}} style={{ padding:"10px 12px", cursor:"pointer", borderBottom:`1px solid ${borderClr}` }} onMouseEnter={e=>{e.currentTarget.style.background="#1a1a1a";}} onMouseLeave={e=>{e.currentTarget.style.background="transparent";}}>
               <div style={{ fontFamily:"'Cinzel', serif", fontSize:13, color:"#e0d6c8" }}>{r.title}</div>
-              <div style={{ fontSize:11, color:"#555", fontStyle:"italic" }}>{r.author} {r.year && `(${r.year})`}{r.edition ? ` · ${r.edition}` : ""}</div>
+              <div style={{ fontSize:11, color:"#555", fontStyle:"italic" }}>{r.author} {r.year && `(${r.year})`}{r.edition ? ` · ${r.edition}` : ""}{r.source === "your-shelf" ? " · your shelf" : r.source === "collector-shelf" ? " · collector shelf" : ""}</div>
             </div>
           ))}
         </div>
@@ -2319,8 +2537,6 @@ function MarketPage({ setModal, t, user }) {
           author={priceCheckBook.author || ""}
           edition={priceCheckBook.edition || ""}
           publisher={priceCheckBook.publisher || ""}
-          strictEditionOnly={strictEditionOnly}
-          ebayMode={ebayMode}
           onClose={()=>setPriceCheckBook(null)}
           user={user}
         />
@@ -2379,10 +2595,143 @@ function ReportSaleModal({ onClose, user }) {
 /* ═══════════════════════════════════════════
    DISCOVER PAGE
    ═══════════════════════════════════════════ */
-function DiscoverPage({ onViewProfile }) {
+function DiscoverPage({ onViewProfile, userId, showToast }) {
   const [communityFeed, setCommunityFeed] = useState([]);
+  const [collectors, setCollectors] = useState([]);
+  const [collectorsLoading, setCollectorsLoading] = useState(true);
+  const [followAvailable, setFollowAvailable] = useState(true);
+  const [followingIds, setFollowingIds] = useState([]);
+  const [followerCounts, setFollowerCounts] = useState({});
+  const [followingCollectors, setFollowingCollectors] = useState([]);
+  const [followOnly, setFollowOnly] = useState(false);
+  const [followBusyId, setFollowBusyId] = useState("");
 
   useEffect(() => { dbGetCommunityActivity(8).then(setCommunityFeed); }, []);
+  useEffect(() => {
+    let mounted = true;
+    dbGetPublicCollectors(36).then(rows => {
+      if (!mounted) return;
+      setCollectors(rows);
+      setCollectorsLoading(false);
+    });
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    Promise.resolve().then(async () => {
+      const snapshot = await dbGetFollowSnapshot(userId, collectors.map(c => c.id));
+      if (!mounted) return;
+      setFollowAvailable(snapshot.available);
+      setFollowingIds(snapshot.followingIds);
+      setFollowerCounts(snapshot.followerCounts);
+
+      if (userId && snapshot.available) {
+        const followedCollectors = await dbGetFollowingCollectors(userId, 24);
+        if (!mounted) return;
+        setFollowingCollectors(followedCollectors);
+        if (followOnly && !followedCollectors.length) setFollowOnly(false);
+        const extraCounts = await dbGetFollowerCounts(followedCollectors.map(c => c.id));
+        if (!mounted) return;
+        setFollowerCounts(prev => ({ ...prev, ...extraCounts }));
+      } else {
+        setFollowingCollectors([]);
+        if (followOnly) setFollowOnly(false);
+      }
+    });
+    return () => { mounted = false; };
+  }, [userId, collectors, followOnly]);
+
+  const followingSet = new Set(followingIds);
+  const visibleCollectors = (userId ? collectors.filter(r => r.id !== userId) : collectors).map(c => ({
+    ...c,
+    isFollowing: followingSet.has(c.id),
+    followerCount: followerCounts[c.id] || 0,
+  }));
+  const filteredCollectors = followOnly ? visibleCollectors.filter(c => c.isFollowing) : visibleCollectors;
+  const followingList = (userId ? followingCollectors.filter(r => r.id !== userId) : []).map(c => ({
+    ...c,
+    isFollowing: followingSet.has(c.id),
+    followerCount: followerCounts[c.id] || 0,
+  }));
+
+  const handleToggleFollow = async (collector) => {
+    if (!userId) {
+      showToast?.("Sign in to follow collectors.", "error");
+      return;
+    }
+    if (!followAvailable) {
+      showToast?.("Follow system is not configured yet.", "error");
+      return;
+    }
+    if (followBusyId === collector.id) return;
+
+    const isFollowing = followingSet.has(collector.id);
+    setFollowBusyId(collector.id);
+    setFollowingIds(prev => isFollowing ? prev.filter(id => id !== collector.id) : [...prev, collector.id]);
+    setFollowerCounts(prev => ({ ...prev, [collector.id]: Math.max(0, (prev[collector.id] || 0) + (isFollowing ? -1 : 1)) }));
+    setFollowingCollectors(prev => {
+      if (isFollowing) return prev.filter(c => c.id !== collector.id);
+      if (prev.some(c => c.id === collector.id)) return prev;
+      return [collector, ...prev].slice(0, 24);
+    });
+
+    const ok = isFollowing
+      ? await dbUnfollowCollector(userId, collector.id)
+      : await dbFollowCollector(userId, collector.id);
+
+    if (!ok) {
+      setFollowingIds(prev => isFollowing ? [...prev, collector.id] : prev.filter(id => id !== collector.id));
+      setFollowerCounts(prev => ({ ...prev, [collector.id]: Math.max(0, (prev[collector.id] || 0) + (isFollowing ? 1 : -1)) }));
+      setFollowingCollectors(prev => {
+        if (!isFollowing) return prev.filter(c => c.id !== collector.id);
+        if (prev.some(c => c.id === collector.id)) return prev;
+        return [collector, ...prev].slice(0, 24);
+      });
+      showToast?.("Could not update follow status right now.", "error");
+      setFollowBusyId("");
+      return;
+    }
+
+    const freshCounts = await dbGetFollowerCounts([collector.id]);
+    setFollowerCounts(prev => ({ ...prev, ...freshCounts }));
+    setFollowBusyId("");
+  };
+
+  const renderCollectorCard = (collector, keyPrefix) => (
+    <div key={`${keyPrefix}-${collector.id}`} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:8 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:12 }}>
+        <div style={{ minWidth:0 }}>
+          <div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{collector.name}</div>
+          <div style={{ fontSize:11, color:"#555", marginTop:2 }}>{collector.booksCount} books · {collector.tier} Shelf · {collector.followerCount} followers</div>
+        </div>
+        <div style={{ textAlign:"right", flexShrink:0 }}>
+          <div style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Collection</div>
+          <div style={{ fontFamily:"'Cinzel', serif", fontSize:15, color:gold }}>{collector.showValue ? `$${collector.totalValue.toLocaleString()}` : "Private"}</div>
+        </div>
+      </div>
+      <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:10 }}>
+        {userId && followAvailable && (
+          <button
+            onClick={() => handleToggleFollow(collector)}
+            disabled={followBusyId === collector.id}
+            style={{
+              ...btnSmall,
+              fontSize:9,
+              padding:"5px 10px",
+              opacity: followBusyId === collector.id ? 0.6 : 1,
+              borderColor: collector.isFollowing ? `${gold}50` : borderClr,
+              color: collector.isFollowing ? gold : "#666",
+              background: collector.isFollowing ? `${gold}16` : "transparent",
+            }}
+          >
+            {followBusyId === collector.id ? "Saving..." : collector.isFollowing ? "Following" : "Follow"}
+          </button>
+        )}
+        <button onClick={() => onViewProfile(collector)} style={{ ...btnSmall, fontSize:9, padding:"5px 10px" }}>View Shelf</button>
+      </div>
+    </div>
+  );
 
   return (<div style={{ padding:"24px 20px 100px" }}>
     <h2 style={{ fontFamily:"'Cinzel', serif", fontSize:22, color:"#e0d6c8", margin:"0 0 4px" }}>Discover</h2>
@@ -2391,14 +2740,42 @@ function DiscoverPage({ onViewProfile }) {
     <SH title="New Releases" />
     {NEW_RELEASES.map(r=>(<div key={r.id} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:8 }}><div style={{ display:"flex", justifyContent:"space-between" }}><div><div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{r.title}</div><div style={{ fontSize:12, color:"#555", fontStyle:"italic" }}>{r.author} · {r.publisher}</div><div style={{ fontSize:11, color:"#444", marginTop:4 }}>{r.editions}</div></div><span style={{ fontSize:9, padding:"3px 8px", borderRadius:4, background:r.status==="Available"?"rgba(100,170,100,0.12)":r.status==="Sold Out"?"rgba(200,100,100,0.12)":`${gold}12`, color:r.status==="Available"?"#6a6":r.status==="Sold Out"?"#c66":gold, fontFamily:"'Cinzel', serif", alignSelf:"flex-start" }}>{r.status}</span></div></div>))}
 
-    {/* Collectors - coming soon */}
+    {userId && followAvailable && (
+      <div style={{ marginTop:28 }}>
+        <SH title="Following" sub="Collectors you follow" />
+        {followingList.length > 0 ? followingList.map(c => renderCollectorCard(c, "following")) : (
+          <div style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"18px 16px", color:"#555", fontSize:12 }}>
+            Follow collectors to build your private discover feed.
+          </div>
+        )}
+      </div>
+    )}
+
+    {/* Collectors */}
     <div style={{ marginTop:28 }}>
       <SH title="Collectors" sub="Browse other collectors' shelves" />
-      <div style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"24px 20px", textAlign:"center" }}>
-        <div style={{ fontSize:24, marginBottom:8, opacity:0.3 }}>&#9734;</div>
-        <p style={{ color:"#666", fontSize:14, margin:"0 0 4px" }}>Public profiles coming soon</p>
-        <p style={{ color:"#444", fontSize:12, margin:0 }}>Once collectors start sharing their shelves, you'll find them here.</p>
-      </div>
+      {userId && followAvailable && (
+        <div style={{ display:"inline-flex", border:`1px solid ${borderClr}`, borderRadius:6, overflow:"hidden", marginBottom:10 }}>
+          <button onClick={() => setFollowOnly(false)} style={{ background:!followOnly?`${gold}20`:"transparent", border:"none", color:!followOnly?gold:"#666", padding:"5px 10px", cursor:"pointer", fontSize:9, fontFamily:"'Cinzel', serif", letterSpacing:0.8 }}>All Collectors</button>
+          <button onClick={() => setFollowOnly(true)} style={{ background:followOnly?`${gold}20`:"transparent", border:"none", borderLeft:`1px solid ${borderClr}`, color:followOnly?gold:"#666", padding:"5px 10px", cursor:"pointer", fontSize:9, fontFamily:"'Cinzel', serif", letterSpacing:0.8 }}>Following Only ({followingIds.length})</button>
+        </div>
+      )}
+      {userId && !followAvailable && (
+        <p style={{ color:"#555", fontSize:11, margin:"0 0 10px" }}>
+          Follow mode will appear once a follow table is configured in Supabase.
+        </p>
+      )}
+      {collectorsLoading ? (
+        <div style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"24px 20px", textAlign:"center", color:"#555", fontSize:12 }}>Loading public collectors...</div>
+      ) : filteredCollectors.length > 0 ? (
+        filteredCollectors.map(c => renderCollectorCard(c, "discover"))
+      ) : (
+        <div style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"24px 20px", textAlign:"center" }}>
+          <div style={{ fontSize:24, marginBottom:8, opacity:0.3 }}>&#9734;</div>
+          <p style={{ color:"#666", fontSize:14, margin:"0 0 4px" }}>{followOnly ? "You are not following any public collectors yet" : "No public collectors yet"}</p>
+          <p style={{ color:"#444", fontSize:12, margin:0 }}>{followOnly ? "Switch to All Collectors and follow a shelf you like." : "Turn on Public Profile in Settings to appear here."}</p>
+        </div>
+      )}
     </div>
 
     <div style={{ marginTop:28 }}><SH title="Recent Activity" /></div>
@@ -2411,6 +2788,8 @@ function DiscoverPage({ onViewProfile }) {
    PUBLIC PROFILE VIEWER
    ═══════════════════════════════════════════ */
 function PublicProfileView({ collector, onBack }) {
+  const showcase = collector.topBooks || [];
+  const publicShelf = collector.books || [];
   return (<div style={{ padding:"24px 20px 100px" }}>
     <button onClick={onBack} style={{ ...btnSmall, marginBottom:16, color:"#555" }}>Back</button>
     <div style={{ textAlign:"center", marginBottom:24 }}>
@@ -2418,12 +2797,41 @@ function PublicProfileView({ collector, onBack }) {
       <h2 style={{ fontFamily:"'Cinzel', serif", fontSize:22, color:"#e0d6c8", margin:"0 0 6px" }}>{collector.name}</h2>
       <TierBadge tier={collector.tier} />
       <div style={{ display:"flex", justifyContent:"center", gap:24, marginTop:16 }}>
-        <div style={{ textAlign:"center" }}><div style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Books</div><div style={{ fontSize:20, fontFamily:"'Cinzel', serif", color:"#e0d6c8" }}>{collector.books}</div></div>
-        <div style={{ textAlign:"center" }}><div style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Value</div><div style={{ fontSize:20, fontFamily:"'Cinzel', serif", color:gold }}>${collector.value.toLocaleString()}</div></div>
+        <div style={{ textAlign:"center" }}><div style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Books</div><div style={{ fontSize:20, fontFamily:"'Cinzel', serif", color:"#e0d6c8" }}>{collector.booksCount}</div></div>
+        <div style={{ textAlign:"center" }}><div style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Value</div><div style={{ fontSize:20, fontFamily:"'Cinzel', serif", color:gold }}>{collector.showValue ? `$${collector.totalValue.toLocaleString()}` : "Private"}</div></div>
+        <div style={{ textAlign:"center" }}><div style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Followers</div><div style={{ fontSize:20, fontFamily:"'Cinzel', serif", color:"#e0d6c8" }}>{collector.followerCount || 0}</div></div>
       </div>
     </div>
     <SH title="Showcase" sub="Top pieces in this collection" />
-    {collector.topBooks.map((b,i)=>(<div key={i} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:8, padding:"12px 14px", marginBottom:8 }}><div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{b}</div></div>))}
+    {showcase.length > 0 ? showcase.map((b,i)=>(
+      <div key={`${b.title}-${i}`} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:8, padding:"12px 14px", marginBottom:8 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", gap:12 }}>
+          <div style={{ minWidth:0 }}>
+            <div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{b.title}</div>
+            <div style={{ fontSize:11, color:"#555", marginTop:2 }}>{b.author}{b.edition ? ` · ${b.edition}` : ""}</div>
+          </div>
+          {collector.showValue && <div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:gold, whiteSpace:"nowrap" }}>${b.value.toLocaleString()}</div>}
+        </div>
+      </div>
+    )) : <p style={{ color:"#444", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>This collector has no public showcase books yet.</p>}
+
+    <div style={{ marginTop:24 }}><SH title="Library" sub={`${publicShelf.length} books`} /></div>
+    {publicShelf.length > 0 ? publicShelf.map((b)=>(
+      <div key={b.id} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:8, padding:"12px 14px", marginBottom:8 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", gap:12 }}>
+          <div style={{ minWidth:0 }}>
+            <div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{b.title}</div>
+            <div style={{ fontSize:11, color:"#555", marginTop:2 }}>
+              {b.author || "Unknown author"}
+              {b.edition ? ` · ${b.edition}` : ""}
+              {b.publisher ? ` · ${b.publisher}` : ""}
+              {b.condition ? ` · ${b.condition}` : ""}
+            </div>
+          </div>
+          {collector.showValue && b.value !== null && <div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:gold, whiteSpace:"nowrap" }}>${b.value.toLocaleString()}</div>}
+        </div>
+      </div>
+    )) : <p style={{ color:"#444", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>No books to display.</p>}
   </div>);
 }
 
@@ -2536,21 +2944,25 @@ function ProfilePage({ books, wishlist, setPage, onLogout, darkMode, setDarkMode
   const [editingName, setEditingName] = useState(false);
   const [newName, setNewName] = useState(user?.user_metadata?.display_name || "");
 
-  // Settings state from profile
-  const [isPublic, setIsPublic] = useState(profile?.is_public ?? true);
-  const [showValue, setShowValue] = useState(profile?.show_value ?? false);
-  const [newReleaseAlerts, setNewReleaseAlerts] = useState(profile?.notify_new_releases ?? true);
-  const [priceAlerts, setPriceAlerts] = useState(profile?.notify_price_alerts ?? true);
-  const [wishlistAlerts, setWishlistAlerts] = useState(profile?.notify_wishlist ?? true);
+  // Settings values sourced from profile state
+  const isPublic = profile?.is_public ?? true;
+  const showValue = profile?.show_value ?? false;
+  const newReleaseAlerts = profile?.notify_new_releases ?? true;
+  const priceAlerts = profile?.notify_price_alerts ?? true;
+  const wishlistAlerts = profile?.notify_wishlist ?? true;
 
   const saveToggle = async (field, value) => {
-    if (user) await dbUpdateProfile(user.id, { [field]: value });
+    if (!user) return;
+    setProfile(prev => ({ ...(prev || { id: user.id }), [field]: value }));
+    const persisted = await dbUpdateProfile(user.id, { [field]: value });
+    if (persisted) setProfile(persisted);
   };
 
   const handleSaveName = async () => {
     if (!newName.trim() || !user) return;
     await supabase.auth.updateUser({ data: { display_name: newName.trim() } });
-    await dbUpdateProfile(user.id, { display_name: newName.trim() });
+    const persisted = await dbUpdateProfile(user.id, { display_name: newName.trim() });
+    if (persisted) setProfile(persisted);
     setEditingName(false);
   };
 
@@ -2575,13 +2987,13 @@ function ProfilePage({ books, wishlist, setPage, onLogout, darkMode, setDarkMode
     <SettingsRow label="Plan" value="Free" />
 
     <div style={{ marginTop:24 }}><SH title="Privacy" /></div>
-    <SettingsToggle label="Public Profile" desc="Let other collectors browse your shelf" value={isPublic} onChange={v=>{setIsPublic(v);saveToggle("is_public",v);}} />
-    <SettingsToggle label="Show Collection Value" desc="Display total value on your public profile" value={showValue} onChange={v=>{setShowValue(v);saveToggle("show_value",v);}} />
+    <SettingsToggle label="Public Profile" desc="Let other collectors browse your shelf" value={isPublic} onChange={v=>saveToggle("is_public",v)} />
+    <SettingsToggle label="Show Collection Value" desc="Display total value on your public profile" value={showValue} onChange={v=>saveToggle("show_value",v)} />
 
     <div style={{ marginTop:24 }}><SH title="Notifications" /></div>
-    <SettingsToggle label="New Release Alerts" desc="When publishers you follow announce books" value={newReleaseAlerts} onChange={v=>{setNewReleaseAlerts(v);saveToggle("notify_new_releases",v);}} />
-    <SettingsToggle label="Price Alerts" desc="When books you track change in value" value={priceAlerts} onChange={v=>{setPriceAlerts(v);saveToggle("notify_price_alerts",v);}} />
-    <SettingsToggle label="Wishlist Alerts" desc="When a book on your hunting list surfaces" value={wishlistAlerts} onChange={v=>{setWishlistAlerts(v);saveToggle("notify_wishlist",v);}} />
+    <SettingsToggle label="New Release Alerts" desc="When publishers you follow announce books" value={newReleaseAlerts} onChange={v=>saveToggle("notify_new_releases",v)} />
+    <SettingsToggle label="Price Alerts" desc="When books you track change in value" value={priceAlerts} onChange={v=>saveToggle("notify_price_alerts",v)} />
+    <SettingsToggle label="Wishlist Alerts" desc="When a book on your hunting list surfaces" value={wishlistAlerts} onChange={v=>saveToggle("notify_wishlist",v)} />
 
     <div style={{ marginTop:24 }}><SH title="Appearance" /></div>
     <SettingsToggle label="Dark Mode" desc={darkMode ? "The collector's preferred aesthetic" : "Light mode active"} value={darkMode} onChange={setDarkMode} />
@@ -2736,7 +3148,7 @@ export default function App() {
     ]);
     setBooks(userBooks);
     setWishlist(userWishlist);
-    if (userProfile) setProfile(userProfile);
+    setProfile(userProfile || null);
     setBooksLoading(false);
   };
 
@@ -2801,6 +3213,8 @@ export default function App() {
     setPage("home");
     setBooks([]);
     setWishlist([]);
+    setProfile(null);
+    setViewingCollector(null);
   };
 
   // Loading screen while checking session
@@ -2894,7 +3308,11 @@ export default function App() {
       {page === "search" && <SearchPage onBack={()=>setPage("home")} user={user} setBooks={setBooks} books={books} showToast={showToast} />}
       {page === "shelf" && <ShelfPage books={books} setBooks={setBooks} modal={modal} setModal={setModal} t={t} user={user} setPage={setPage} showToast={showToast} />}
       {page === "market" && <MarketPage setModal={setModal} t={t} user={user} />}
-      {page === "discover" && <DiscoverPage onViewProfile={c => setViewingCollector(c)} t={t} />}
+      {page === "discover" && <DiscoverPage onViewProfile={async c => {
+        const full = await dbLoadPublicCollectorProfile(c.id);
+        if (full) setViewingCollector(full);
+        else showToast("This collector profile is private.", "error");
+      }} userId={user?.id} showToast={showToast} />}
       {page === "profile" && <ProfilePage books={books} wishlist={wishlist} setPage={setPage} onLogout={handleLogout} darkMode={darkMode} setDarkMode={setDarkMode} t={t} user={user} profile={profile} setProfile={setProfile} />}
       {page === "wishlist" && <WishlistPage wishlist={wishlist} setWishlist={setWishlist} setPage={setPage} t={t} user={user} />}
 
