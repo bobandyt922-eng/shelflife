@@ -41,6 +41,48 @@ npm run dev
 | `GOOGLE_API_KEY` | No | Google Custom Search API key |
 | `GOOGLE_CSE_ID` | No | Google Custom Search Engine ID |
 | `GOOGLE_MARKET_DOMAINS` | No | Comma-separated domains to search (defaults to abebooks.com, biblio.com, etc.) |
+| `SUPABASE_SERVICE_ROLE_KEY` | No | Supabase service role key (for server-side price report validation) |
+
+## Setting Up Google Custom Search (for book pricing)
+
+Google Custom Search pulls prices from AbeBooks, Biblio, BookFinder, Alibris, and other book market sites. This significantly improves pricing accuracy, especially for collector editions that don't always appear on eBay.
+
+### Step 1: Get a Google API Key
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project (or select an existing one)
+3. Go to **APIs & Services → Library**
+4. Search for **"Custom Search API"** and click **Enable**
+5. Go to **APIs & Services → Credentials**
+6. Click **Create Credentials → API Key**
+7. Copy the key — this is your `GOOGLE_API_KEY`
+8. (Recommended) Click the key and restrict it to "Custom Search API" only
+
+### Step 2: Create a Custom Search Engine
+
+1. Go to [Programmable Search Engine](https://programmablesearchengine.google.com/controlpanel/all)
+2. Click **Add** to create a new search engine
+3. Under **"Sites to search"**, add these domains (one per line):
+   - `abebooks.com`
+   - `biblio.com`
+   - `bookfinder.com`
+   - `alibris.com`
+   - `pangobooks.com`
+   - `betterworldbooks.com`
+4. Name it something like "ShelfLife Book Market"
+5. Click **Create**
+6. On the next screen, copy the **Search engine ID** — this is your `GOOGLE_CSE_ID`
+
+### Step 3: Add to your environment
+
+Add both values to your `.env.local` (for local dev) or your hosting provider's environment variables:
+
+```
+GOOGLE_API_KEY=AIza...your-key-here
+GOOGLE_CSE_ID=a1b2c3...your-cse-id
+```
+
+The free tier gives you 100 searches/day. For higher volume, billing can be enabled on the Google Cloud project.
 
 ## Database Tables (Supabase)
 
