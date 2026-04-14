@@ -1355,13 +1355,15 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
   const [f, setF] = useState(()=>book?{...book}:{...emptyBook}); const s=(k,v)=>setF(p=>({...p,[k]:v})); const valid=f.title.trim()&&f.author.trim();
   const [searchingCover, setSearchingCover] = useState(false);
   const [coverOptions, setCoverOptions] = useState([]);
+  const [estimating, setEstimating] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
 
   const searchCover = async () => {
     if (!f.title.trim()) return;
     setSearchingCover(true);
     setCoverOptions([]);
     try {
-      // Use title-specific search for much better results
       const titleQ = encodeURIComponent(f.title.trim());
       const authorQ = f.author.trim() ? "&author=" + encodeURIComponent(f.author.trim()) : "";
       const resp = await fetch(`https://openlibrary.org/search.json?title=${titleQ}${authorQ}&limit=12&fields=key,title,author_name,cover_i`);
@@ -1370,15 +1372,59 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
         id: d.cover_i,
         url: `https://covers.openlibrary.org/b/id/${d.cover_i}-L.jpg`,
         thumb: `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg`,
-        title: d.title,
-        author: (d.author_name || []).join(", "),
       }));
-      // Deduplicate by cover ID
       const seen = new Set();
-      const unique = covers.filter(c => { if (seen.has(c.id)) return false; seen.add(c.id); return true; });
-      setCoverOptions(unique);
+      setCoverOptions(covers.filter(c => { if (seen.has(c.id)) return false; seen.add(c.id); return true; }));
     } catch (e) { console.log("Cover search failed"); }
     setSearchingCover(false);
+  };
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Compress and convert to data URL for now (Supabase Storage can be added later)
+    setUploading(true);
+    try {
+      const canvas = document.createElement("canvas");
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 600, maxH = 900;
+        let w = img.width, h = img.height;
+        if (w > maxW) { h = (maxW / w) * h; w = maxW; }
+        if (h > maxH) { w = (maxH / h) * w; h = maxH; }
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
+        s("coverUrl", dataUrl);
+        setUploading(false);
+      };
+      img.onerror = () => { setUploading(false); };
+      img.src = URL.createObjectURL(file);
+    } catch (err) { setUploading(false); }
+  };
+
+  const estimateValue = async () => {
+    if (!f.title.trim()) return;
+    setEstimating(true);
+    // Get community reports
+    const reports = await dbGetPriceReports(f.title);
+    const communityPrices = reports.map(r => r.price);
+    // Get eBay sold data
+    let ebayPrices = [];
+    try {
+      const params = new URLSearchParams({ title: f.title });
+      if (f.publisher) params.set("publisher", f.publisher);
+      if (f.editionType) params.set("edition", f.editionType);
+      const resp = await fetch(`/api/ebay?${params.toString()}`);
+      const data = await resp.json();
+      if (data.results) ebayPrices = data.results.map(r => r.price);
+    } catch(e) {}
+    const allPrices = [...communityPrices, ...ebayPrices];
+    if (allPrices.length > 0) {
+      const avg = Math.round(allPrices.reduce((a, b) => a + b, 0) / allPrices.length);
+      s("currentValue", String(avg));
+    }
+    setEstimating(false);
   };
 
   return (<div>
@@ -1395,11 +1441,17 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
       </div>
       <div style={{ flex:1 }}>
         <label style={labelBase}>Cover Image</label>
-        <input style={{ ...inputBase, fontSize:12, padding:"8px 10px", marginBottom:6 }} placeholder="Paste image URL..." value={f.coverUrl||""} onChange={e=>s("coverUrl",e.target.value)} />
-        <button onClick={searchCover} disabled={searchingCover} style={{ background:"none", border:`1px solid ${gold}40`, color:gold, padding:"4px 10px", borderRadius:4, cursor:"pointer", fontSize:11, fontFamily:"'Cinzel', serif", opacity:searchingCover?0.5:1 }}>
-          {searchingCover ? "Searching..." : "Find Cover"}
-        </button>
-        {f.coverUrl && <button onClick={()=>s("coverUrl","")} style={{ background:"none", border:"none", color:"#666", padding:"4px 8px", cursor:"pointer", fontSize:11, marginLeft:6 }}>Remove</button>}
+        <div style={{ display:"flex", gap:6, marginBottom:6, flexWrap:"wrap" }}>
+          <button onClick={()=>fileInputRef.current?.click()} disabled={uploading} style={{ background:"none", border:`1px solid ${gold}40`, color:gold, padding:"4px 10px", borderRadius:4, cursor:"pointer", fontSize:10, fontFamily:"'Cinzel', serif" }}>
+            {uploading ? "Uploading..." : "Upload Photo"}
+          </button>
+          <button onClick={searchCover} disabled={searchingCover} style={{ background:"none", border:`1px solid ${gold}40`, color:gold, padding:"4px 10px", borderRadius:4, cursor:"pointer", fontSize:10, fontFamily:"'Cinzel', serif", opacity:searchingCover?0.5:1 }}>
+            {searchingCover ? "Searching..." : "Find Cover"}
+          </button>
+          {f.coverUrl && <button onClick={()=>s("coverUrl","")} style={{ background:"none", border:"none", color:"#666", padding:"4px 6px", cursor:"pointer", fontSize:10 }}>Remove</button>}
+        </div>
+        <input style={{ ...inputBase, fontSize:11, padding:"6px 8px" }} placeholder="Or paste image URL..." value={f.coverUrl||""} onChange={e=>s("coverUrl",e.target.value)} />
+        <input ref={fileInputRef} type="file" accept="image/*" style={{ display:"none" }} onChange={handleFileUpload} />
       </div>
     </div>
 
@@ -1427,38 +1479,58 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
       <div><label style={labelBase}>Edition</label><select style={selectBase} value={f.editionType} onChange={e=>s("editionType",e.target.value)}><option value="">Select...</option>{EDITION_TYPES.map(t=><option key={t}>{t}</option>)}</select></div>
       <div><label style={labelBase}>Limitation</label><input style={inputBase} value={f.limitation} onChange={e=>s("limitation",e.target.value)} placeholder="#42/500" /></div>
       <div><label style={labelBase}>Condition</label><select style={selectBase} value={f.condition} onChange={e=>s("condition",e.target.value)}>{CONDITIONS.map(c=><option key={c}>{c}</option>)}</select></div>
-      <div><label style={labelBase}>Paid ($)</label><input style={inputBase} type="number" value={f.purchasePrice} onChange={e=>s("purchasePrice",e.target.value)} /></div>
-      <div><label style={labelBase}>Value ($)</label><input style={inputBase} type="number" value={f.currentValue} onChange={e=>s("currentValue",e.target.value)} /></div>
+      <div><label style={labelBase}>Paid ($)</label><input style={inputBase} type="number" value={f.purchasePrice} onChange={e=>s("purchasePrice",e.target.value)} placeholder="Optional" /></div>
+      <div>
+        <label style={labelBase}>Est. Value ($)</label>
+        <div style={{ display:"flex", gap:4 }}>
+          <input style={{ ...inputBase, flex:1 }} type="number" value={f.currentValue} onChange={e=>s("currentValue",e.target.value)} placeholder="—" />
+          <button onClick={estimateValue} disabled={estimating||!f.title.trim()} style={{ background:"none", border:`1px solid ${gold}40`, color:gold, padding:"0 8px", borderRadius:4, cursor:"pointer", fontSize:9, fontFamily:"'Cinzel', serif", whiteSpace:"nowrap", opacity:(estimating||!f.title.trim())?0.4:1 }} title="Estimate from community data">
+            {estimating ? "..." : "Est."}
+          </button>
+        </div>
+        {f.currentValue && <div style={{ fontSize:9, color:"#444", marginTop:2 }}>Based on community reports</div>}
+      </div>
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Notes</label><textarea style={{ ...inputBase, minHeight:50, resize:"vertical" }} value={f.notes} onChange={e=>s("notes",e.target.value)} /></div>
     </div>
     <div style={{ display:"flex", gap:12, marginTop:16, justifyContent:"flex-end" }}><button onClick={onCancel} style={btnGhost}>Cancel</button><button onClick={()=>{if(valid)onSave(f);}} style={{ ...btnPrimary, opacity:valid?1:0.4, padding:"10px 20px", fontSize:12 }}>{isEdit?"Save":"Add to Shelf"}</button></div>
   </div>);
 }
 
-function PriceCheckPanel({ title, edition, onClose, user }) {
+function PriceCheckPanel({ title, edition, publisher, onClose, user }) {
   const [loading, setLoading] = useState(true);
   const [communityData, setCommunityData] = useState([]);
+  const [ebayData, setEbayData] = useState([]);
+  const [ebayLoading, setEbayLoading] = useState(true);
+  const [ebayError, setEbayError] = useState(null);
   const [showReport, setShowReport] = useState(false);
 
   useEffect(() => {
-    const load = async () => {
-      const reports = await dbGetPriceReports(title);
-      setCommunityData(reports);
-      setLoading(false);
-    };
-    load();
+    dbGetPriceReports(title).then(r => { setCommunityData(r); setLoading(false); });
+    const params = new URLSearchParams({ title });
+    if (publisher) params.set("publisher", publisher);
+    if (edition) params.set("edition", edition);
+    fetch(`/api/ebay?${params.toString()}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.results) setEbayData(data.results);
+        else if (data.error) setEbayError(data.error);
+        setEbayLoading(false);
+      })
+      .catch(() => { setEbayError("Failed to connect"); setEbayLoading(false); });
   }, [title]);
 
-  if (loading) return (
+  if (loading && ebayLoading) return (
     <div style={{ padding: "40px 0", textAlign: "center" }}>
-      <div style={{ width: 28, height: 28, border: `2px solid #333`, borderTopColor: gold, borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 16px" }} />
+      <div style={{ width: 28, height: 28, border: "2px solid #333", borderTopColor: "#c4a265", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 16px" }} />
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      <p style={{ fontFamily: "'Cinzel', serif", fontSize: 13, color: gold, letterSpacing: 1 }}>Checking prices...</p>
-      <p style={{ fontSize: 11, color: "#555", fontStyle: "italic" }}>Scanning community data</p>
+      <p style={{ fontFamily: "'Cinzel', serif", fontSize: 13, color: "#c4a265", letterSpacing: 1 }}>Checking prices...</p>
+      <p style={{ fontSize: 11, color: "#555", fontStyle: "italic" }}>Scanning eBay sold listings and community data</p>
     </div>
   );
 
-  const allPrices = communityData.map(c => c.price);
+  const communityPrices = communityData.map(c => c.price);
+  const ebayPrices = ebayData.map(e => e.price);
+  const allPrices = [...communityPrices, ...ebayPrices];
   const hasData = allPrices.length > 0;
   const avg = hasData ? Math.round(allPrices.reduce((a,b)=>a+b,0) / allPrices.length) : 0;
   const low = hasData ? Math.min(...allPrices) : 0;
@@ -1469,18 +1541,17 @@ function PriceCheckPanel({ title, edition, onClose, user }) {
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:16 }}>
         <div>
           <h3 style={{ fontFamily:"'Cinzel', serif", color:gold, margin:0, fontSize:18 }}>Price Check</h3>
-          <p style={{ color:"#666", fontSize:13, fontStyle:"italic", margin:"4px 0 0" }}>{title} {edition && `· ${edition}`}</p>
+          <p style={{ color:"#666", fontSize:13, fontStyle:"italic", margin:"4px 0 0" }}>{title} {edition && `\u00b7 ${edition}`}</p>
         </div>
         {onClose && <button onClick={onClose} style={{ background:"none", border:"none", color:"#444", fontSize:16, cursor:"pointer" }}>X</button>}
       </div>
 
-      {/* Estimated Value */}
       {hasData ? (
         <div style={{ background:"linear-gradient(135deg, #1a1510, #111)", border:`1px solid ${gold}25`, borderRadius:10, padding:"18px 20px", marginBottom:16, textAlign:"center" }}>
           <div style={{ fontSize:9, color:gold, textTransform:"uppercase", letterSpacing:2, fontFamily:"'Cinzel', serif", marginBottom:6 }}>Estimated Value</div>
           <div style={{ fontSize:36, fontFamily:"'Cinzel', serif", color:gold }}>${avg.toLocaleString()}</div>
-          <div style={{ fontSize:12, color:"#666", marginTop:4 }}>Range: ${low.toLocaleString()} — ${high.toLocaleString()}</div>
-          <div style={{ fontSize:10, color:"#444", marginTop:4 }}>Based on {allPrices.length} community report{allPrices.length !== 1 ? "s" : ""}</div>
+          <div style={{ fontSize:12, color:"#666", marginTop:4 }}>Range: ${low.toLocaleString()} \u2014 ${high.toLocaleString()}</div>
+          <div style={{ fontSize:10, color:"#444", marginTop:4 }}>Based on {allPrices.length} data point{allPrices.length !== 1 ? "s" : ""} (eBay sold + community)</div>
         </div>
       ) : (
         <div style={{ background:"linear-gradient(135deg, #1a1510, #111)", border:`1px solid ${borderClr}`, borderRadius:10, padding:"18px 20px", marginBottom:16, textAlign:"center" }}>
@@ -1489,7 +1560,34 @@ function PriceCheckPanel({ title, edition, onClose, user }) {
         </div>
       )}
 
-      {/* Community Reported Sales */}
+      <div style={{ marginBottom:16 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+          <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>eBay Sold</div>
+          {ebayLoading ? <span style={{ fontSize:10, color:"#555" }}>Loading...</span> : <span style={{ fontSize:10, color:"#444" }}>{ebayData.length} listing{ebayData.length !== 1 ? "s" : ""}</span>}
+        </div>
+        {ebayLoading ? (
+          <div style={{ padding:"12px", textAlign:"center" }}><div style={{ width:16, height:16, border:"2px solid #333", borderTopColor:"#c4a265", borderRadius:"50%", animation:"spin 0.8s linear infinite", margin:"0 auto" }} /></div>
+        ) : ebayError ? (
+          <p style={{ color:"#555", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>{ebayError}</p>
+        ) : ebayData.length > 0 ? (
+          ebayData.map((e,i)=>(
+            <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 12px", background:i%2===0?"#0f0f0f":"transparent", borderRadius:4, fontSize:12, marginBottom:1 }}>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                  <span style={{ color:"#e0d6c8", fontFamily:"'Cinzel', serif", fontSize:14 }}>${e.price.toLocaleString()}</span>
+                  {e.condition && <span style={{ color:"#555", fontSize:9 }}>{e.condition}</span>}
+                  <span style={{ fontSize:8, color:"#333", background:"#1a1a1a", padding:"1px 4px", borderRadius:2 }}>Match: {e.score}%</span>
+                </div>
+                <div style={{ fontSize:10, color:"#444", marginTop:2, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{e.title}</div>
+              </div>
+              <span style={{ color:"#444", fontSize:9, flexShrink:0, marginLeft:8 }}>{e.date}</span>
+            </div>
+          ))
+        ) : (
+          <p style={{ color:"#555", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>No sold listings found.</p>
+        )}
+      </div>
+
       {communityData.length > 0 && (
         <div style={{ marginBottom:16 }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
@@ -1501,25 +1599,18 @@ function PriceCheckPanel({ title, edition, onClose, user }) {
               <div>
                 <span style={{ color:"#e0d6c8", fontFamily:"'Cinzel', serif", fontSize:14 }}>${c.price.toLocaleString()}</span>
                 {c.condition && <span style={{ color:"#555", marginLeft:8, fontSize:10 }}>{c.condition}</span>}
-                {c.edition && <span style={{ color:"#444", marginLeft:6, fontSize:10 }}>· {c.edition}</span>}
-                {c.publisher && <span style={{ color:"#444", marginLeft:6, fontSize:10 }}>· {c.publisher}</span>}
+                {c.edition && <span style={{ color:"#444", marginLeft:6, fontSize:10 }}>\u00b7 {c.edition}</span>}
+                {c.publisher && <span style={{ color:"#444", marginLeft:6, fontSize:10 }}>\u00b7 {c.publisher}</span>}
               </div>
               <div style={{ textAlign:"right" }}>
                 <div style={{ color:gold, fontSize:10 }}>{c.user}</div>
-                <div style={{ color:"#444", fontSize:9 }}>{c.source} · {c.date}</div>
+                <div style={{ color:"#444", fontSize:9 }}>{c.source} \u00b7 {c.date}</div>
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* eBay & AbeBooks placeholder */}
-      <div style={{ background:"#0f0f0f", borderRadius:8, padding:14, marginBottom:16, border:`1px solid ${borderClr}`, textAlign:"center" }}>
-        <div style={{ fontSize:11, color:"#444", fontFamily:"'Cinzel', serif", letterSpacing:1, marginBottom:4 }}>eBay & AbeBooks Data</div>
-        <p style={{ color:"#555", fontSize:12, margin:0 }}>Live marketplace pricing coming soon</p>
-      </div>
-
-      {/* Report a Sale Button */}
       {!showReport ? (
         <div style={{ textAlign:"center", padding:"8px 0" }}>
           <p style={{ color:"#555", fontSize:12, marginBottom:8 }}>Have price data to share?</p>
@@ -1528,16 +1619,12 @@ function PriceCheckPanel({ title, edition, onClose, user }) {
       ) : (
         <QuickReportSale title={title} edition={edition} user={user} onDone={(reported)=>{
           setShowReport(false);
-          if (reported) {
-            // Refresh the data
-            dbGetPriceReports(title).then(r => setCommunityData(r));
-          }
+          if (reported) { dbGetPriceReports(title).then(r => setCommunityData(r)); }
         }} />
       )}
     </div>
   );
 }
-
 function QuickReportSale({ title, edition, onDone, user }) {
   const [price,setPrice]=useState(""); const [source,setSource]=useState("eBay"); const [condition,setCond]=useState("Fine"); const [notes,setNotes]=useState(""); const [submitted,setSubmitted]=useState(false); const [saving,setSaving]=useState(false);
 
@@ -1665,7 +1752,7 @@ function DetailView({ book, onEdit, onDelete, onClose, onUpdateCover, user }) {
       </button>
     ) : (
       <div style={{ marginBottom:14, border:`1px solid ${borderClr}`, borderRadius:10, padding:16, background:"#0a0a0a" }}>
-        <PriceCheckPanel title={book.title} edition={book.editionType} onClose={()=>setShowPriceCheck(false)} user={user} />
+        <PriceCheckPanel title={book.title} edition={book.editionType} publisher={book.publisher} onClose={()=>setShowPriceCheck(false)} user={user} />
       </div>
     )}
 
