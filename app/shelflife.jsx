@@ -425,6 +425,45 @@ async function dbSearchBooks(query) {
   return merged.slice(0, 20);
 }
 
+async function dbSearchUserCollection(query, userId) {
+  const q = query.toLowerCase().trim();
+  if (!userId || q.length < 2) return [];
+
+  const { data, error } = await supabase
+    .from("user_collection")
+    .select("title, author, date_added")
+    .eq("user_id", userId)
+    .or(`title.ilike.%${q}%,author.ilike.%${q}%`)
+    .order("date_added", { ascending: false })
+    .limit(20);
+  if (error) { console.error("Search user collection error:", error); return []; }
+
+  return (data || []).map(row => ({
+    title: row.title || "Unknown",
+    author: row.author || "Unknown",
+    source: "your-shelf",
+  }));
+}
+
+async function dbSearchReportedTitles(query) {
+  const q = query.toLowerCase().trim();
+  if (q.length < 2) return [];
+
+  const { data, error } = await supabase
+    .from("price_reports")
+    .select("title, author, created_at")
+    .or(`title.ilike.%${q}%,author.ilike.%${q}%`)
+    .order("created_at", { ascending: false })
+    .limit(20);
+  if (error) { console.error("Search price reports error:", error); return []; }
+
+  return (data || []).map(row => ({
+    title: row.title || "Unknown",
+    author: row.author || "Unknown",
+    source: "community-report",
+  }));
+}
+
 function Modal({ children, onClose }) {
   return (<div data-modal-bg onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.92)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, backdropFilter:"blur(8px)", padding:16 }}><div data-modal-card onClick={e=>e.stopPropagation()} style={{ background:`linear-gradient(180deg, #1a1a1a, ${cardBg})`, border:"1px solid #2a2a2a", borderRadius:12, padding:28, width:"100%", maxWidth:640, maxHeight:"88vh", overflowY:"auto", boxShadow:"0 32px 100px rgba(0,0,0,0.9)" }}>{children}</div></div>);
 }
@@ -1578,7 +1617,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
       ) : (
         <div style={{ background:"linear-gradient(135deg, #1a1510, #111)", border:`1px solid ${borderClr}`, borderRadius:10, padding:"18px 20px", marginBottom:16, textAlign:"center" }}>
           <div style={{ fontSize:9, color:"#555", textTransform:"uppercase", letterSpacing:2, fontFamily:"'Cinzel', serif", marginBottom:6 }}>No Price Data Yet</div>
-          <p style={{ color:"#666", fontSize:13, margin:"8px 0 0" }}>Be the first to report a sale for this book.</p>
+          <p style={{ color:"#666", fontSize:13, margin:"8px 0 0" }}>Be the first to share a price reference for this book.</p>
         </div>
       )}
 
@@ -1637,8 +1676,8 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
       {communityData.length > 0 && (
         <div style={{ marginBottom:16 }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-            <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Community Reported</div>
-            <span style={{ fontSize:10, color:"#444" }}>{communityData.length} sale{communityData.length !== 1 ? "s" : ""}</span>
+            <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Community References</div>
+            <span style={{ fontSize:10, color:"#444" }}>{communityData.length} report{communityData.length !== 1 ? "s" : ""}</span>
           </div>
           {communityData.map((c,i)=>(
             <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 12px", background:i%2===0?"#0f0f0f":"transparent", borderRadius:4, fontSize:12, marginBottom:2 }}>
@@ -1660,7 +1699,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
       {!showReport ? (
         <div style={{ textAlign:"center", padding:"8px 0" }}>
           <p style={{ color:"#555", fontSize:12, marginBottom:8 }}>Have price data to share?</p>
-          <button onClick={()=>setShowReport(true)} style={{ ...btnSmall, color:gold, borderColor:`${gold}40` }}>Report a Sale Price</button>
+          <button onClick={()=>setShowReport(true)} style={{ ...btnSmall, color:gold, borderColor:`${gold}40` }}>Share Price Data</button>
         </div>
       ) : (
         <QuickReportSale title={title} edition={edition} user={user} onDone={(reported)=>{
@@ -1691,7 +1730,7 @@ function QuickReportSale({ title, edition, onDone, user }) {
 
   return (
     <div style={{ background:"#0f0f0f", borderRadius:8, padding:16, border:`1px solid ${borderClr}` }}>
-      <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif", marginBottom:10 }}>Report a Sale</div>
+      <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif", marginBottom:10 }}>Share Price Data</div>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
         <div><label style={labelBase}>Price ($) *</label><input style={{ ...inputBase, fontSize:13, padding:"8px 10px" }} type="number" value={price} onChange={e=>setPrice(e.target.value)} placeholder="0.00" /></div>
         <div><label style={labelBase}>Source</label><select style={{ ...selectBase, fontSize:12, padding:"8px" }} value={source} onChange={e=>setSource(e.target.value)}><option>eBay</option><option>AbeBooks</option><option>Private Sale</option><option>Facebook Group</option><option>Forum</option><option>Other</option></select></div>
@@ -1844,6 +1883,9 @@ function MarketPage({ setModal, t, user }) {
   const [priceCheckBook, setPriceCheckBook] = useState(null);
   const [searchResults, setSearchResults] = useState([]);
   const [marketFeed, setMarketFeed] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const searchTimer = useRef(null);
+  const searchToken = useRef(0);
 
   useEffect(() => {
     Promise.all([
@@ -1858,26 +1900,64 @@ function MarketPage({ setModal, t, user }) {
     });
   }, []);
 
+  useEffect(() => () => clearTimeout(searchTimer.current), []);
+
   const doSearch = (q) => {
     setPriceSearch(q);
-    if (q.trim().length < 2) { setSearchResults([]); return; }
-    const ql = q.toLowerCase();
-    setSearchResults(BOOK_DB.filter(b => b.title.toLowerCase().includes(ql) || b.author.toLowerCase().includes(ql)).slice(0, 8));
+    clearTimeout(searchTimer.current);
+    const trimmed = q.trim();
+    if (trimmed.length < 2) {
+      searchToken.current += 1;
+      setSearching(false);
+      setSearchResults([]);
+      return;
+    }
+
+    searchTimer.current = setTimeout(async () => {
+      const token = ++searchToken.current;
+      setSearching(true);
+      const ql = trimmed.toLowerCase();
+      const localResults = BOOK_DB
+        .filter(b => b.title.toLowerCase().includes(ql) || b.author.toLowerCase().includes(ql))
+        .map(b => ({ ...b, source: "local" }));
+
+      const [dbResults, userShelfResults, reportedResults] = await Promise.all([
+        dbSearchBooks(trimmed),
+        dbSearchUserCollection(trimmed, user?.id),
+        dbSearchReportedTitles(trimmed),
+      ]);
+      if (token !== searchToken.current) return;
+
+      const seen = new Set();
+      const merged = [];
+      [...userShelfResults, ...dbResults, ...reportedResults, ...localResults].forEach(r => {
+        const key = (r.title + "|" + (r.author || "")).toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          merged.push(r);
+        }
+      });
+      setSearchResults(merged.slice(0, 12));
+      setSearching(false);
+    }, 280);
   };
 
   return (<div style={{ padding:"24px 20px 100px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
       <div><h2 style={{ fontFamily:"'Cinzel', serif", fontSize:22, color:"#e0d6c8", margin:0 }}>The Market</h2><p style={{ color:"#555", fontSize:12, margin:"2px 0 0", fontStyle:"italic" }}>Prices, values, and trends</p></div>
-      <button onClick={()=>setModal({type:"report"})} style={{ ...btnPrimary, padding:"8px 14px", fontSize:10 }}>Report Sale</button>
+      <button onClick={()=>setModal({type:"report"})} style={{ ...btnPrimary, padding:"8px 14px", fontSize:10 }}>Share Price Data</button>
     </div>
 
     {/* Price Check Search */}
     <div style={{ background:cardBg, border:`1px solid ${gold}20`, borderRadius:10, padding:"16px 18px", marginBottom:20 }}>
       <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif", marginBottom:8 }}>Price Check</div>
       <p style={{ color:"#666", fontSize:12, margin:"0 0 10px" }}>Look up any book's estimated market value</p>
-      <input style={{ ...inputBase, fontSize:14, padding:"10px 14px" }} placeholder="Search title or author..." value={priceSearch} onChange={e=>doSearch(e.target.value)} />
+      <div style={{ position:"relative" }}>
+        <input style={{ ...inputBase, fontSize:14, padding:"10px 38px 10px 14px" }} placeholder="Search title or author..." value={priceSearch} onChange={e=>doSearch(e.target.value)} />
+        {searching && <div style={{ position:"absolute", right:12, top:"50%", transform:"translateY(-50%)", width:14, height:14, border:"2px solid #333", borderTopColor:gold, borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />}
+      </div>
 
-      {searchResults.length > 0 && !priceCheckBook && (
+      {searchResults.length > 0 && !priceCheckBook && !searching && (
         <div style={{ marginTop:8, maxHeight:200, overflowY:"auto", borderRadius:6, border:`1px solid ${borderClr}` }}>
           {searchResults.map((r,i)=>(
             <div key={i} onClick={()=>{setPriceCheckBook(r);setSearchResults([]);setPriceSearch("");}} style={{ padding:"10px 12px", cursor:"pointer", borderBottom:`1px solid ${borderClr}` }} onMouseEnter={e=>{e.currentTarget.style.background="#1a1a1a";}} onMouseLeave={e=>{e.currentTarget.style.background="transparent";}}>
@@ -1886,6 +1966,9 @@ function MarketPage({ setModal, t, user }) {
             </div>
           ))}
         </div>
+      )}
+      {priceSearch.trim().length >= 2 && !searching && searchResults.length === 0 && !priceCheckBook && (
+        <p style={{ color:"#555", fontSize:12, margin:"8px 2px 0" }}>No matches yet. Try a shorter title or search by author.</p>
       )}
     </div>
 
@@ -1896,7 +1979,7 @@ function MarketPage({ setModal, t, user }) {
     )}
 
     {/* Market Feed - collection values + reported sales */}
-    <SH title="Recent Valuations" sub="From collector shelves and reported sales" />
+    <SH title="Recent Valuations" sub="From collector shelves and community price reports" />
     {marketFeed.length > 0 ? marketFeed.map((m,i)=>(<div key={i} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:10 }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
         <div><div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{m.title}</div><div style={{ fontSize:11, color:"#555", marginTop:2 }}>{m.publisher}{m.edition ? ` \u00b7 ${m.edition}` : ""}{m.condition ? ` \u00b7 ${m.condition}` : ""}</div></div>
@@ -1906,11 +1989,10 @@ function MarketPage({ setModal, t, user }) {
     </div>))
     : <div style={{ textAlign:"center", padding:"32px 0" }}>
         <p style={{ color:"#555", fontSize:14, marginBottom:8 }}>No market data yet.</p>
-        <p style={{ color:"#444", fontSize:12, marginBottom:16 }}>Add books with values or report sales to build market data.</p>
-        <button onClick={()=>setModal({type:"report"})} style={{ ...btnPrimary, padding:"10px 20px", fontSize:12 }}>Report a Sale</button>
+        <p style={{ color:"#444", fontSize:12, marginBottom:16 }}>Add books with values or share price reports to build market data.</p>
+        <button onClick={()=>setModal({type:"report"})} style={{ ...btnPrimary, padding:"10px 20px", fontSize:12 }}>Share Price Data</button>
       </div>}
   </div>);
-}
 }
 
 function ReportSaleModal({ onClose, user }) {
@@ -1927,16 +2009,16 @@ function ReportSaleModal({ onClose, user }) {
     if (ok) { setSaved(true); setTimeout(onClose, 1500); }
   };
 
-  if (saved) return (<div style={{ textAlign:"center", padding:"32px 0" }}><div style={{ color:"#6a6", fontSize:16, marginBottom:8 }}>Sale reported!</div><p style={{ color:"#555", fontSize:13 }}>Thank you for contributing to the community.</p></div>);
+  if (saved) return (<div style={{ textAlign:"center", padding:"32px 0" }}><div style={{ color:"#6a6", fontSize:16, marginBottom:8 }}>Price data shared!</div><p style={{ color:"#555", fontSize:13 }}>Thank you for contributing to the community.</p></div>);
 
   return (<div>
-    <h2 style={{ fontFamily:"'Cinzel', serif", color:gold, margin:"0 0 16px", fontSize:18 }}>Report a Sale</h2>
-    <p style={{ color:"#666", fontSize:12, margin:"0 0 14px" }}>Help build the pricing database. Report sales you've seen or made.</p>
+    <h2 style={{ fontFamily:"'Cinzel', serif", color:gold, margin:"0 0 16px", fontSize:18 }}>Share Price Data</h2>
+    <p style={{ color:"#666", fontSize:12, margin:"0 0 14px" }}>Help build the pricing database with observed listings and completed sales.</p>
     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Book Title *</label><input style={inputBase} value={f.title} onChange={e=>s("title",e.target.value)} placeholder="e.g. The Stand" /></div>
       <div><label style={labelBase}>Publisher</label><input style={inputBase} value={f.publisher} onChange={e=>s("publisher",e.target.value)} placeholder="e.g. Cemetery Dance" /></div>
       <div><label style={labelBase}>Edition</label><input style={inputBase} value={f.edition} onChange={e=>s("edition",e.target.value)} placeholder="e.g. Lettered" /></div>
-      <div><label style={labelBase}>Sale Price ($) *</label><input style={inputBase} type="number" value={f.price} onChange={e=>s("price",e.target.value)} /></div>
+      <div><label style={labelBase}>Observed Price ($) *</label><input style={inputBase} type="number" value={f.price} onChange={e=>s("price",e.target.value)} /></div>
       <div><label style={labelBase}>Source</label><select style={selectBase} value={f.source} onChange={e=>s("source",e.target.value)}><option>eBay</option><option>AbeBooks</option><option>Private Sale</option><option>Facebook Group</option><option>Forum</option><option>Other</option></select></div>
       <div><label style={labelBase}>Condition</label><select style={selectBase} value={f.condition} onChange={e=>s("condition",e.target.value)}>{CONDITIONS.map(c=><option key={c}>{c}</option>)}</select></div>
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Notes</label><input style={inputBase} value={f.notes} onChange={e=>s("notes",e.target.value)} placeholder="Details..." /></div>
