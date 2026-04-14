@@ -1011,6 +1011,7 @@ function BookForm({ book, onSave, onCancel, isEdit, userId }) {
       dbGetCollectionValues(f.title, lookup),
     ]);
     let ebayPrices = [];
+    let marketError = null;
     try {
       const params = new URLSearchParams({ title: f.title });
       if (f.author) params.set("author", f.author);
@@ -1019,7 +1020,10 @@ function BookForm({ book, onSave, onCancel, isEdit, userId }) {
       const resp = await fetch(`/api/ebay?${params.toString()}`);
       const data = await resp.json();
       if (data.results) ebayPrices = data.results;
-    } catch(e) {}
+      if (data.error) marketError = data.error;
+    } catch(e) {
+      marketError = e.message;
+    }
     const points = buildMarketPricePoints({
       communityData: reports,
       collectionData: collectionVals,
@@ -1035,7 +1039,10 @@ function BookForm({ book, onSave, onCancel, isEdit, userId }) {
       if (ebayPrices.length) sources.push(`${ebayPrices.length} listing${ebayPrices.length > 1 ? "s" : ""}`);
       setEstimateMsg({ type: "success", text: `Estimated $${stats.avg.toLocaleString()} from ${sources.join(", ")} (range: $${stats.low.toLocaleString()}–$${stats.high.toLocaleString()})` });
     } else {
-      setEstimateMsg({ type: "none", text: "No pricing data found for this title yet. Try adding edition and publisher details, or report a sale to seed the market." });
+      const hint = marketError
+        ? `Marketplace error: ${marketError}`
+        : "No pricing data found yet. You can enter a value manually, or report a sale to build the market database.";
+      setEstimateMsg({ type: "none", text: hint });
     }
     setEstimating(false);
   };
@@ -1233,7 +1240,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
             </span>
           )}
         </div>
-        {edition && !ebayLoading && (
+        {edition && !ebayLoading && ebayData.length > 0 && (
           <div style={{ fontSize:9, color:"#555", marginBottom:6 }}>
             Badge guide: Edition Match = same class, Related Edition = nearby class, Edition Unknown = listing does not name an edition clearly.
           </div>
