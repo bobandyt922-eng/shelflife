@@ -433,7 +433,7 @@ function PublicHomePage({ onLogin, onSignup, onBrowse }) {
         <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
           {[
             ["&#128218;", "Catalog Every Edition", "Track lettered, numbered, traycased, and every other edition type with full details."],
-            ["&#128200;", "Know Your Value", "Real market data from eBay sold listings and community reports. See what your books are worth."],
+            ["&#128200;", "Know Your Value", "Real market data from eBay listings and community reports. See what your books are worth."],
             ["&#128276;", "Never Miss a Drop", "New release alerts from the publishers you follow. Pre-orders, availability, sold out status."],
           ].map(([icon, t, d], i) => (
             <div key={i} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"16px" }}>
@@ -1358,7 +1358,7 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
     // Get community reports
     const reports = await dbGetPriceReports(f.title);
     const communityPrices = reports.map(r => r.price);
-    // Get eBay sold data
+    // Get eBay data
     let ebayPrices = [];
     try {
       const params = new URLSearchParams({ title: f.title });
@@ -1424,7 +1424,20 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Title *</label><input style={inputBase} value={f.title} onChange={e=>s("title",e.target.value)} /></div>
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Author *</label><input style={inputBase} value={f.author} onChange={e=>s("author",e.target.value)} /></div>
-      <div><label style={labelBase}>Publisher</label><select style={selectBase} value={f.publisher} onChange={e=>s("publisher",e.target.value)}><option value="">Select...</option>{PUBLISHERS.map(p=><option key={p}>{p}</option>)}</select></div>
+      <div><label style={labelBase}>Publisher</label>
+        {f.publisher === "__custom__" || (f.publisher && !PUBLISHERS.includes(f.publisher)) ? (
+          <div style={{ display:"flex", gap:4 }}>
+            <input style={{ ...inputBase, flex:1 }} value={f.publisher === "__custom__" ? "" : f.publisher} onChange={e=>s("publisher",e.target.value)} placeholder="Enter publisher name..." autoFocus />
+            <button onClick={()=>s("publisher","")} style={{ ...btnSmall, fontSize:9, padding:"4px 8px", whiteSpace:"nowrap" }}>List</button>
+          </div>
+        ) : (
+          <select style={selectBase} value={f.publisher} onChange={e=>{if(e.target.value==="__custom__")s("publisher","__custom__");else s("publisher",e.target.value);}}>
+            <option value="">Select...</option>
+            {PUBLISHERS.filter(p=>p!=="Other").map(p=><option key={p}>{p}</option>)}
+            <option value="__custom__">+ Add Other Publisher</option>
+          </select>
+        )}
+      </div>
       <div><label style={labelBase}>Edition</label><select style={selectBase} value={f.editionType} onChange={e=>s("editionType",e.target.value)}><option value="">Select...</option>{EDITION_TYPES.map(t=><option key={t}>{t}</option>)}</select></div>
       <div><label style={labelBase}>Limitation</label><input style={inputBase} value={f.limitation} onChange={e=>s("limitation",e.target.value)} placeholder="#42/500" /></div>
       <div><label style={labelBase}>Condition</label><select style={selectBase} value={f.condition} onChange={e=>s("condition",e.target.value)}>{CONDITIONS.map(c=><option key={c}>{c}</option>)}</select></div>
@@ -1473,7 +1486,7 @@ function PriceCheckPanel({ title, edition, publisher, onClose, user }) {
       <div style={{ width: 28, height: 28, border: "2px solid #333", borderTopColor: "#c4a265", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 16px" }} />
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       <p style={{ fontFamily: "'Cinzel', serif", fontSize: 13, color: "#c4a265", letterSpacing: 1 }}>Checking prices...</p>
-      <p style={{ fontSize: 11, color: "#555", fontStyle: "italic" }}>Scanning eBay sold listings and community data</p>
+      <p style={{ fontSize: 11, color: "#555", fontStyle: "italic" }}>Scanning eBay listings and community data</p>
     </div>
   );
 
@@ -1500,7 +1513,7 @@ function PriceCheckPanel({ title, edition, publisher, onClose, user }) {
           <div style={{ fontSize:9, color:gold, textTransform:"uppercase", letterSpacing:2, fontFamily:"'Cinzel', serif", marginBottom:6 }}>Estimated Value</div>
           <div style={{ fontSize:36, fontFamily:"'Cinzel', serif", color:gold }}>${avg.toLocaleString()}</div>
           <div style={{ fontSize:12, color:"#666", marginTop:4 }}>Range: ${low.toLocaleString()} \u2014 ${high.toLocaleString()}</div>
-          <div style={{ fontSize:10, color:"#444", marginTop:4 }}>Based on {allPrices.length} data point{allPrices.length !== 1 ? "s" : ""} (eBay sold + community)</div>
+          <div style={{ fontSize:10, color:"#444", marginTop:4 }}>Based on {allPrices.length} data point{allPrices.length !== 1 ? "s" : ""} (eBay + community)</div>
         </div>
       ) : (
         <div style={{ background:"linear-gradient(135deg, #1a1510, #111)", border:`1px solid ${borderClr}`, borderRadius:10, padding:"18px 20px", marginBottom:16, textAlign:"center" }}>
@@ -1511,7 +1524,7 @@ function PriceCheckPanel({ title, edition, publisher, onClose, user }) {
 
       <div style={{ marginBottom:16 }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-          <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>eBay Sold</div>
+          <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>eBay Listings</div>
           {ebayLoading ? <span style={{ fontSize:10, color:"#555" }}>Loading...</span> : <span style={{ fontSize:10, color:"#444" }}>{ebayData.length} listing{ebayData.length !== 1 ? "s" : ""}</span>}
         </div>
         {ebayLoading ? (
@@ -1533,7 +1546,7 @@ function PriceCheckPanel({ title, edition, publisher, onClose, user }) {
             </div>
           ))
         ) : (
-          <p style={{ color:"#555", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>No sold listings found.</p>
+          <p style={{ color:"#555", fontSize:12, fontStyle:"italic", padding:"8px 0" }}>No eBay listings found for this title.</p>
         )}
       </div>
 
