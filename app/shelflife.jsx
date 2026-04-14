@@ -79,6 +79,177 @@ const inputBase = { width:"100%", background:"var(--input-bg)", border:"1px soli
 const selectBase = { ...inputBase, appearance:"auto" };
 const labelBase = { display:"block", fontSize:10, textTransform:"uppercase", letterSpacing:2, color:gold, marginBottom:4, fontFamily:"'Cinzel', serif" };
 const emptyBook = { title:"",author:"",publisher:"",editionType:"",limitation:"",condition:"Mint",purchasePrice:"",currentValue:"",notes:"",coverUrl:"" };
+const SHELF_VALUATION_SOURCE = "Shelf Valuation";
+
+const toPriceNumber = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+const normalizeText = (value) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const EDITION_CLASSES = [
+  { key: "lettered", terms: ["lettered", "letter ed", "roman numeral"] },
+  { key: "numbered", terms: ["numbered", "numbered edition", "limited numbered"] },
+  { key: "traycased", terms: ["traycased", "traycase", "slipcased", "slipcase"] },
+  { key: "deluxe", terms: ["deluxe", "ultra deluxe", "artist edition"] },
+  { key: "gift", terms: ["gift edition"] },
+  { key: "first", terms: ["first edition", "first printing", "1st edition", "1st printing"] },
+  { key: "arc-proof", terms: ["arc", "proof", "galley", "uncorrected proof"] },
+  { key: "paperback", terms: ["paperback", "mass market", "trade paperback"] },
+  { key: "hardcover", terms: ["hardcover"] },
+];
+const MIN_STRICT_COMPS_FOR_HIGH = 2;
+
+const includesNormalized = (source, target) => {
+  const t = normalizeText(target);
+  if (!t) return true;
+  return normalizeText(source).includes(t);
+};
+
+const getEditionClass = (value) => {
+  const text = normalizeText(value);
+  if (!text) return "";
+  for (const group of EDITION_CLASSES) {
+    if (group.terms.some(term => text.includes(term))) return group.key;
+  }
+  return "";
+};
+
+const isRelatedEditionClass = (targetClass, candidateClass) => {
+  if (!targetClass || !candidateClass) return false;
+  if (targetClass === candidateClass) return true;
+  const related = {
+    lettered: ["traycased", "deluxe"],
+    numbered: ["traycased", "deluxe"],
+    traycased: ["lettered", "numbered", "deluxe"],
+    deluxe: ["traycased", "lettered", "numbered"],
+    gift: ["hardcover"],
+  };
+  return (related[targetClass] || []).includes(candidateClass);
+};
+
+const getEditionMatchType = (targetEdition, candidateEdition) => {
+  const targetClass = getEditionClass(targetEdition);
+  if (!targetClass) return "any";
+  const candidateClass = getEditionClass(candidateEdition);
+  if (!candidateClass) return "unknown";
+  if (candidateClass === targetClass) return "strict";
+  if (isRelatedEditionClass(targetClass, candidateClass)) return "related";
+  return "mismatch";
+};
+
+const pickEditionScopedPoints = (points, targetEdition, { strictOnly = false } = {}) => {
+  if (!targetEdition) return points;
+  const strict = points.filter(p => p.matchType === "strict");
+  if (strictOnly) return strict;
+  const related = points.filter(p => p.matchType === "related");
+  const unknown = points.filter(p => p.matchType === "unknown");
+  if (strict.length >= 2) return strict;
+  if (strict.length === 1) return [...strict, ...related.slice(0, 2), ...unknown.slice(0, 1)];
+  if (related.length >= 2) return related;
+  if (strict.length + related.length > 0) return [...strict, ...related, ...unknown.slice(0, 1)];
+  return [];
+};
+
+function buildMarketPricePoints({ communityData = [], collectionData = [], ebayData = [], targetEdition = "", strictEditionOnly = false }) {
+  const rawPoints = [
+    ...communityData.map(item => ({
+      price: toPriceNumber(item.price),
+      source: "reports",
+      matchType: item.matchType || getEditionMatchType(targetEdition, item.edition),
+    })),
+    ...collectionData.map(item => ({
+      price: toPriceNumber(item.value),
+      source: "shelves",
+      matchType: item.matchType || getEditionMatchType(targetEdition, item.edition),
+    })),
+    ...ebayData.map(item => ({
+      price: toPriceNumber(item.price),
+      source: "ebay",
+      matchType: item.matchType || getEditionMatchType(targetEdition, item.title),
+    })),
+  ].filter(point => point.price !== null);
+
+  if (!targetEdition) return rawPoints;
+  return pickEditionScopedPoints(rawPoints, targetEdition, { strictOnly: strictEditionOnly });
+}
+
+const quantile = (sorted, q) => {
+  if (sorted.length === 0) return 0;
+  const pos = (sorted.length - 1) * q;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  if (sorted[base + 1] !== undefined) return sorted[base] + rest * (sorted[base + 1] - sorted[base]);
+  return sorted[base];
+};
+
+function calculateMarketStats(pricePoints = []) {
+  if (pricePoints.length === 0) return { hasData: false, avg: 0, low: 0, high: 0, count: 0 };
+
+  const sorted = pricePoints.map(p => p.price).sort((a, b) => a - b);
+  let filtered = sorted;
+  if (sorted.length >= 4) {
+    const q1 = quantile(sorted, 0.25);
+    const q3 = quantile(sorted, 0.75);
+    const iqr = q3 - q1;
+    const min = q1 - iqr * 1.5;
+    const max = q3 + iqr * 1.5;
+    const iqrFiltered = sorted.filter(p => p >= min && p <= max);
+    if (iqrFiltered.length >= 3) filtered = iqrFiltered;
+  }
+
+  const avg = Math.round(filtered.reduce((sum, p) => sum + p, 0) / filtered.length);
+  return {
+    hasData: true,
+    avg,
+    low: Math.min(...filtered),
+    high: Math.max(...filtered),
+    count: filtered.length,
+  };
+}
+
+function calculateConfidence(pricePoints = [], targetEdition = "", { strictEditionOnly = false } = {}) {
+  if (pricePoints.length === 0) {
+    return {
+      label: "Low",
+      color: "#777",
+      detail: targetEdition ? "No edition-matched data points yet." : "No market data points yet.",
+    };
+  }
+
+  const sourceCount = new Set(pricePoints.map(p => p.source)).size;
+  if (!targetEdition) {
+    if (pricePoints.length >= 8 && sourceCount >= 2) {
+      return { label: "High", color: "#6a6", detail: "Strong sample size across multiple sources." };
+    }
+    if (pricePoints.length >= 4) {
+      return { label: "Medium", color: "#b99a5a", detail: "Reasonable sample size, but still developing." };
+    }
+    return { label: "Low", color: "#c77", detail: "Limited data points; estimate may move quickly." };
+  }
+
+  const strictCount = pricePoints.filter(p => p.matchType === "strict").length;
+  const relatedCount = pricePoints.filter(p => p.matchType === "related").length;
+
+  if (strictCount >= MIN_STRICT_COMPS_FOR_HIGH && sourceCount >= 2) {
+    return { label: "High", color: "#6a6", detail: `${strictCount} strict edition matches across ${sourceCount} sources.` };
+  }
+  if (strictCount >= 2 || (strictCount >= 1 && relatedCount >= 1)) {
+    return { label: "Medium", color: "#b99a5a", detail: `${strictCount} strict + ${relatedCount} related edition matches.` };
+  }
+  if (strictEditionOnly) {
+    return {
+      label: "Low",
+      color: "#c77",
+      detail: strictCount > 0 ? "Strict-only mode has very few exact comps." : "Strict-only mode found no exact edition comps.",
+    };
+  }
+  return {
+    label: "Low",
+    color: "#c77",
+    detail: strictCount > 0 ? "Very limited strict edition data." : "Using sparse related-edition signals.",
+  };
+}
 
 /* ═══════════════════════════════════════════
    DATABASE FUNCTIONS
@@ -106,6 +277,70 @@ async function dbLoadCollection(userId) {
   }));
 }
 
+function getShelfValuationMarker(shelfId) {
+  return `[shelf:${shelfId}]`;
+}
+
+async function dbSyncShelfValuation(userId, shelfId, book) {
+  if (!userId || !shelfId || !book?.title) return;
+
+  const marker = getShelfValuationMarker(shelfId);
+  const { data, error } = await supabase
+    .from("price_reports")
+    .select("id")
+    .eq("reported_by", userId)
+    .eq("sale_source", SHELF_VALUATION_SOURCE)
+    .eq("notes", marker)
+    .limit(1);
+  if (error) { console.error("Shelf valuation lookup error:", error); return; }
+
+  const existingId = data?.[0]?.id;
+  const shelfValue = toPriceNumber(book.currentValue);
+
+  if (!shelfValue) {
+    if (existingId) {
+      const { error: deleteError } = await supabase.from("price_reports").delete().eq("id", existingId);
+      if (deleteError) console.error("Shelf valuation delete error:", deleteError);
+    }
+    return;
+  }
+
+  const payload = {
+    reported_by: userId,
+    title: book.title,
+    author: book.author || null,
+    publisher: book.publisher || null,
+    edition_type: book.editionType || null,
+    sale_price: shelfValue,
+    sale_source: SHELF_VALUATION_SOURCE,
+    condition: book.condition || null,
+    notes: marker,
+  };
+
+  if (existingId) {
+    const { error: updateError } = await supabase
+      .from("price_reports")
+      .update(payload)
+      .eq("id", existingId);
+    if (updateError) console.error("Shelf valuation update error:", updateError);
+  } else {
+    const { error: insertError } = await supabase.from("price_reports").insert(payload);
+    if (insertError) console.error("Shelf valuation insert error:", insertError);
+  }
+}
+
+async function dbDeleteShelfValuation(userId, shelfId) {
+  if (!userId || !shelfId) return;
+  const marker = getShelfValuationMarker(shelfId);
+  const { error } = await supabase
+    .from("price_reports")
+    .delete()
+    .eq("reported_by", userId)
+    .eq("sale_source", SHELF_VALUATION_SOURCE)
+    .eq("notes", marker);
+  if (error) console.error("Delete shelf valuation error:", error);
+}
+
 async function dbAddBook(userId, book) {
   // Also save to the shared books table so others can find it
   await supabase.from("books").upsert(
@@ -131,6 +366,14 @@ async function dbAddBook(userId, book) {
     .select()
     .single();
   if (error) { console.error("Add book error:", error); return null; }
+  await dbSyncShelfValuation(userId, data.id, {
+    title: data.title,
+    author: data.author,
+    publisher: data.publisher,
+    editionType: data.edition_type,
+    condition: data.condition,
+    currentValue: data.current_value,
+  });
   return {
     id: data.id, title: data.title, author: data.author,
     publisher: data.publisher || "", editionType: data.edition_type || "",
@@ -140,7 +383,13 @@ async function dbAddBook(userId, book) {
   };
 }
 
-async function dbUpdateBook(bookId, book) {
+async function dbUpdateBook(bookId, book, userId) {
+  // Keep shared lookup table fresh if title/author changed.
+  await supabase.from("books").upsert(
+    { title: book.title, author: book.author },
+    { onConflict: "title,author", ignoreDuplicates: true }
+  );
+
   const { error } = await supabase
     .from("user_collection")
     .update({
@@ -157,15 +406,17 @@ async function dbUpdateBook(bookId, book) {
     })
     .eq("id", bookId);
   if (error) { console.error("Update book error:", error); return false; }
+  await dbSyncShelfValuation(userId, bookId, book);
   return true;
 }
 
-async function dbDeleteBook(bookId) {
+async function dbDeleteBook(bookId, userId) {
   const { error } = await supabase
     .from("user_collection")
     .delete()
     .eq("id", bookId);
   if (error) { console.error("Delete book error:", error); return false; }
+  await dbDeleteShelfValuation(userId, bookId);
   return true;
 }
 
@@ -301,22 +552,31 @@ async function dbCheckDuplicate(userId, title, author) {
 }
 
 /* Get collection values from all users for a book title */
-async function dbGetCollectionValues(title) {
-  const { data, error } = await supabase
+async function dbGetCollectionValues(title, { author = "", edition = "", publisher = "" } = {}) {
+  let query = supabase
     .from("user_collection")
     .select("current_value, purchase_price, edition_type, publisher, condition, profiles:user_id(display_name)")
     .ilike("title", `%${title}%`)
     .not("current_value", "is", null)
     .gt("current_value", 0)
     .limit(30);
+  if (author.trim()) query = query.ilike("author", `%${author.trim()}%`);
+
+  const { data, error } = await query;
   if (error) { console.error("Collection values error:", error); return []; }
-  return (data || []).map(row => ({
+  return (data || [])
+    .filter(row => {
+      const matchType = getEditionMatchType(edition, row.edition_type);
+      return matchType !== "mismatch" && includesNormalized(row.publisher, publisher);
+    })
+    .map(row => ({
     value: Number(row.current_value),
     paid: row.purchase_price ? Number(row.purchase_price) : null,
     edition: row.edition_type || "",
     publisher: row.publisher || "",
     condition: row.condition || "",
     user: row.profiles?.display_name || "Anonymous",
+    matchType: getEditionMatchType(edition, row.edition_type),
   }));
 }
 
@@ -362,15 +622,23 @@ async function dbReportSale(userId, report) {
   return true;
 }
 
-async function dbGetPriceReports(title) {
-  const { data, error } = await supabase
+async function dbGetPriceReports(title, { author = "", edition = "", publisher = "" } = {}) {
+  let query = supabase
     .from("price_reports")
     .select("*, profiles:reported_by(display_name)")
     .ilike("title", `%${title}%`)
     .order("created_at", { ascending: false })
     .limit(20);
+  if (author.trim()) query = query.ilike("author", `%${author.trim()}%`);
+
+  const { data, error } = await query;
   if (error) { console.error("Get price reports error:", error); return []; }
-  return (data || []).map(row => ({
+  return (data || [])
+    .filter(row => {
+      const matchType = getEditionMatchType(edition, row.edition_type);
+      return matchType !== "mismatch" && includesNormalized(row.publisher, publisher);
+    })
+    .map(row => ({
     price: Number(row.sale_price),
     source: row.sale_source || "Unknown",
     condition: row.condition || "",
@@ -379,6 +647,7 @@ async function dbGetPriceReports(title) {
     notes: row.notes || "",
     user: row.profiles?.display_name || "Anonymous",
     date: new Date(row.created_at).toLocaleDateString("en-US", { month:"short", day:"numeric", year:"numeric" }),
+    matchType: getEditionMatchType(edition, row.edition_type),
   }));
 }
 
@@ -423,6 +692,48 @@ async function dbSearchBooks(query) {
     if (!seen.has(key)) { seen.add(key); merged.push(r); }
   });
   return merged.slice(0, 20);
+}
+
+async function dbSearchUserCollection(query, userId) {
+  const q = query.toLowerCase().trim();
+  if (q.length < 2) return [];
+
+  const { data, error } = await supabase
+    .from("user_collection")
+    .select("title, author, publisher, edition_type, user_id, created_at")
+    .or(`title.ilike.%${q}%,author.ilike.%${q}%`)
+    .order("created_at", { ascending: false })
+    .limit(30);
+  if (error) { console.error("Search user collection error:", error); return []; }
+
+  return (data || []).map(row => ({
+    title: row.title || "Unknown",
+    author: row.author || "Unknown",
+    publisher: row.publisher || "",
+    edition: row.edition_type || "",
+    source: userId && row.user_id === userId ? "your-shelf" : "collector-shelf",
+  }));
+}
+
+async function dbSearchReportedTitles(query) {
+  const q = query.toLowerCase().trim();
+  if (q.length < 2) return [];
+
+  const { data, error } = await supabase
+    .from("price_reports")
+    .select("title, author, publisher, edition_type, created_at")
+    .or(`title.ilike.%${q}%,author.ilike.%${q}%`)
+    .order("created_at", { ascending: false })
+    .limit(30);
+  if (error) { console.error("Search price reports error:", error); return []; }
+
+  return (data || []).map(row => ({
+    title: row.title || "Unknown",
+    author: row.author || "Unknown",
+    publisher: row.publisher || "",
+    edition: row.edition_type || "",
+    source: "community-report",
+  }));
 }
 
 function Modal({ children, onClose }) {
@@ -1244,7 +1555,7 @@ function ShelfPage({ books, setBooks, modal, setModal, t, user, setPage, showToa
 
   const handleSave = async (d) => {
     if (modal?.type === "edit") {
-      const ok = await dbUpdateBook(modal.book.id, d);
+      const ok = await dbUpdateBook(modal.book.id, d, user?.id);
       if (ok) { setBooks(p => p.map(b => b.id === modal.book.id ? { ...b, ...d } : b)); if(showToast) showToast("Book updated!"); }
     } else {
       if (!user) return;
@@ -1257,7 +1568,7 @@ function ShelfPage({ books, setBooks, modal, setModal, t, user, setPage, showToa
   };
 
   const handleDelete = async (id) => {
-    const ok = await dbDeleteBook(id);
+    const ok = await dbDeleteBook(id, user?.id);
     if (ok) setBooks(p => p.filter(b => b.id !== id));
     setModal(null); setConfirmDel(null);
   };
@@ -1334,7 +1645,7 @@ function ShelfPage({ books, setBooks, modal, setModal, t, user, setPage, showToa
 
       {modal?.type==="edit"&&<Modal onClose={()=>setModal(null)}><BookForm book={modal.book} isEdit onSave={handleSave} onCancel={()=>setModal(null)} /></Modal>}
       {modal?.type==="detail"&&!confirmDel&&<Modal onClose={()=>setModal(null)}><DetailView book={modal.book} user={user} onEdit={()=>setModal({type:"edit",book:modal.book})} onDelete={()=>setConfirmDel(modal.book.id)} onClose={()=>setModal(null)} onUpdateCover={async (bookId, url) => {
-        await dbUpdateBook(bookId, { ...modal.book, coverUrl: url });
+        await dbUpdateBook(bookId, { ...modal.book, coverUrl: url }, user?.id);
         setBooks(p => p.map(b => b.id === bookId ? { ...b, coverUrl: url } : b));
         setModal(prev => prev ? { ...prev, book: { ...prev.book, coverUrl: url } } : null);
       }} /></Modal>}
@@ -1398,13 +1709,12 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
   const estimateValue = async () => {
     if (!f.title.trim()) return;
     setEstimating(true);
+    const lookup = { author: f.author, edition: f.editionType, publisher: f.publisher };
     // Get community reports + collection values
     const [reports, collectionVals] = await Promise.all([
-      dbGetPriceReports(f.title),
-      dbGetCollectionValues(f.title),
+      dbGetPriceReports(f.title, lookup),
+      dbGetCollectionValues(f.title, lookup),
     ]);
-    const communityPrices = reports.map(r => r.price);
-    const collectionPrices = collectionVals.map(c => c.value);
     // Get eBay data
     let ebayPrices = [];
     try {
@@ -1414,13 +1724,16 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
       if (f.editionType) params.set("edition", f.editionType);
       const resp = await fetch(`/api/ebay?${params.toString()}`);
       const data = await resp.json();
-      if (data.results) ebayPrices = data.results.map(r => r.price);
+      if (data.results) ebayPrices = data.results;
     } catch(e) {}
-    const allPrices = [...communityPrices, ...collectionPrices, ...ebayPrices];
-    if (allPrices.length > 0) {
-      const avg = Math.round(allPrices.reduce((a, b) => a + b, 0) / allPrices.length);
-      s("currentValue", String(avg));
-    }
+    const points = buildMarketPricePoints({
+      communityData: reports,
+      collectionData: collectionVals,
+      ebayData: ebayPrices,
+      targetEdition: f.editionType,
+    });
+    const stats = calculateMarketStats(points);
+    if (stats.hasData) s("currentValue", String(stats.avg));
     setEstimating(false);
   };
 
@@ -1498,7 +1811,7 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
             {estimating ? "..." : "Est."}
           </button>
         </div>
-        {f.currentValue && <div style={{ fontSize:9, color:"#444", marginTop:2 }}>Based on community reports</div>}
+        {f.currentValue && <div style={{ fontSize:9, color:"#444", marginTop:2 }}>Based on shelves, reports, and eBay data</div>}
       </div>
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Notes</label><textarea style={{ ...inputBase, minHeight:50, resize:"vertical" }} value={f.notes} onChange={e=>s("notes",e.target.value)} /></div>
     </div>
@@ -1506,7 +1819,7 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
   </div>);
 }
 
-function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
+function PriceCheckPanel({ title, author, edition, publisher, onClose, user, strictEditionOnly = false, ebayMode = "sold" }) {
   const [loading, setLoading] = useState(true);
   const [communityData, setCommunityData] = useState([]);
   const [collectionData, setCollectionData] = useState([]);
@@ -1517,9 +1830,10 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
 
   useEffect(() => {
     // Load community reports + collection values
+    const lookup = { author, edition, publisher };
     Promise.all([
-      dbGetPriceReports(title),
-      dbGetCollectionValues(title),
+      dbGetPriceReports(title, lookup),
+      dbGetCollectionValues(title, lookup),
     ]).then(([reports, collections]) => {
       setCommunityData(reports);
       setCollectionData(collections);
@@ -1530,6 +1844,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
     if (author) params.set("author", author);
     if (publisher) params.set("publisher", publisher);
     if (edition) params.set("edition", edition);
+    params.set("mode", ebayMode);
     fetch(`/api/ebay?${params.toString()}`)
       .then(r => r.json())
       .then(data => {
@@ -1538,7 +1853,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
         setEbayLoading(false);
       })
       .catch(e => { setEbayError("Failed to connect: " + e.message); setEbayLoading(false); });
-  }, [title]);
+  }, [title, author, edition, publisher, ebayMode]);
 
   if (loading && ebayLoading) return (
     <div style={{ padding: "40px 0", textAlign: "center" }}>
@@ -1549,14 +1864,19 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
     </div>
   );
 
-  const communityPrices = communityData.map(c => c.price);
-  const collectionPrices = collectionData.map(c => c.value);
-  const ebayPrices = ebayData.map(e => e.price);
-  const allPrices = [...communityPrices, ...collectionPrices, ...ebayPrices];
-  const hasData = allPrices.length > 0;
-  const avg = hasData ? Math.round(allPrices.reduce((a,b)=>a+b,0) / allPrices.length) : 0;
-  const low = hasData ? Math.min(...allPrices) : 0;
-  const high = hasData ? Math.max(...allPrices) : 0;
+  const points = buildMarketPricePoints({
+    communityData,
+    collectionData,
+    ebayData,
+    targetEdition: edition,
+    strictEditionOnly,
+  });
+  const stats = calculateMarketStats(points);
+  const confidence = calculateConfidence(points, edition, { strictEditionOnly });
+  const hasData = stats.hasData;
+  const avg = stats.avg;
+  const low = stats.low;
+  const high = stats.high;
 
   return (
     <div>
@@ -1573,20 +1893,34 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
           <div style={{ fontSize:9, color:gold, textTransform:"uppercase", letterSpacing:2, fontFamily:"'Cinzel', serif", marginBottom:6 }}>Estimated Value</div>
           <div style={{ fontSize:36, fontFamily:"'Cinzel', serif", color:gold }}>${avg.toLocaleString()}</div>
           <div style={{ fontSize:12, color:"#666", marginTop:4 }}>Range: ${low.toLocaleString()} \u2014 ${high.toLocaleString()}</div>
-          <div style={{ fontSize:10, color:"#444", marginTop:4 }}>Based on {allPrices.length} data point{allPrices.length !== 1 ? "s" : ""} (shelves + reports + eBay)</div>
+          <div style={{ fontSize:10, color:"#444", marginTop:4 }}>
+            Based on {stats.count} {edition ? "edition-matched " : ""}data point{stats.count !== 1 ? "s" : ""} (shelves + reports + eBay)
+          </div>
+          <div style={{ display:"inline-flex", alignItems:"center", gap:8, marginTop:10, padding:"4px 10px", border:`1px solid ${confidence.color}55`, borderRadius:999 }}>
+            <span title="Confidence considers sample size, source diversity, and strict edition match quality." style={{ fontSize:9, color:confidence.color, fontFamily:"'Cinzel', serif", letterSpacing:1.2, textTransform:"uppercase" }}>Confidence: {confidence.label}</span>
+            <span style={{ fontSize:9, color:"#666" }}>{confidence.detail}</span>
+          </div>
+          {edition && strictEditionOnly && (
+            <div style={{ fontSize:9, color:"#777", marginTop:6 }}>Strict-only mode enabled (exact edition comps only).</div>
+          )}
         </div>
       ) : (
         <div style={{ background:"linear-gradient(135deg, #1a1510, #111)", border:`1px solid ${borderClr}`, borderRadius:10, padding:"18px 20px", marginBottom:16, textAlign:"center" }}>
           <div style={{ fontSize:9, color:"#555", textTransform:"uppercase", letterSpacing:2, fontFamily:"'Cinzel', serif", marginBottom:6 }}>No Price Data Yet</div>
-          <p style={{ color:"#666", fontSize:13, margin:"8px 0 0" }}>Be the first to report a sale for this book.</p>
+          <p style={{ color:"#666", fontSize:13, margin:"8px 0 0" }}>Be the first to share a price reference for this book.</p>
         </div>
       )}
 
       <div style={{ marginBottom:16 }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
           <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>eBay Listings</div>
-          {ebayLoading ? <span style={{ fontSize:10, color:"#555" }}>Loading...</span> : <span style={{ fontSize:10, color:"#444" }}>{ebayData.length} listing{ebayData.length !== 1 ? "s" : ""}</span>}
+          {ebayLoading ? <span style={{ fontSize:10, color:"#555" }}>Loading...</span> : <span style={{ fontSize:10, color:"#444" }}>{ebayData.length} {ebayMode === "sold" ? "sold comp" : "listing"}{ebayData.length !== 1 ? "s" : ""}</span>}
         </div>
+        {edition && !ebayLoading && (
+          <div style={{ fontSize:9, color:"#555", marginBottom:6 }}>
+            Badge guide: Edition Match = same class, Related Edition = nearby class, Edition Unknown = listing does not name an edition clearly.
+          </div>
+        )}
         {ebayLoading ? (
           <div style={{ padding:"12px", textAlign:"center" }}><div style={{ width:16, height:16, border:"2px solid #333", borderTopColor:"#c4a265", borderRadius:"50%", animation:"spin 0.8s linear infinite", margin:"0 auto" }} /></div>
         ) : ebayError ? (
@@ -1599,6 +1933,14 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
                   <span style={{ color:"#e0d6c8", fontFamily:"'Cinzel', serif", fontSize:14 }}>${e.price.toLocaleString()}</span>
                   {e.condition && <span style={{ color:"#555", fontSize:9 }}>{e.condition}</span>}
                   <span style={{ fontSize:8, color:"#333", background:"#1a1a1a", padding:"1px 4px", borderRadius:2 }}>Match: {e.score}%</span>
+                  {edition && e.matchType && e.matchType !== "any" && (
+                    <span
+                      title={e.matchType === "strict" ? "Listing explicitly matches your edition class." : e.matchType === "related" ? "Listing is a nearby edition class; useful but less exact." : "Listing lacks clear edition wording."}
+                      style={{ fontSize:8, color:e.matchType === "strict" ? "#6a6" : "#888", border:`1px solid ${e.matchType === "strict" ? "#2f5" : "#666"}50`, padding:"1px 4px", borderRadius:2 }}
+                    >
+                      {e.matchType === "strict" ? "Edition Match" : e.matchType === "related" ? "Related Edition" : "Edition Unknown"}
+                    </span>
+                  )}
                 </div>
                 <div style={{ fontSize:10, color:"#444", marginTop:2, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{e.title}</div>
               </div>
@@ -1637,8 +1979,8 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
       {communityData.length > 0 && (
         <div style={{ marginBottom:16 }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-            <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Community Reported</div>
-            <span style={{ fontSize:10, color:"#444" }}>{communityData.length} sale{communityData.length !== 1 ? "s" : ""}</span>
+            <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Community References</div>
+            <span style={{ fontSize:10, color:"#444" }}>{communityData.length} report{communityData.length !== 1 ? "s" : ""}</span>
           </div>
           {communityData.map((c,i)=>(
             <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 12px", background:i%2===0?"#0f0f0f":"transparent", borderRadius:4, fontSize:12, marginBottom:2 }}>
@@ -1660,18 +2002,18 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
       {!showReport ? (
         <div style={{ textAlign:"center", padding:"8px 0" }}>
           <p style={{ color:"#555", fontSize:12, marginBottom:8 }}>Have price data to share?</p>
-          <button onClick={()=>setShowReport(true)} style={{ ...btnSmall, color:gold, borderColor:`${gold}40` }}>Report a Sale Price</button>
+          <button onClick={()=>setShowReport(true)} style={{ ...btnSmall, color:gold, borderColor:`${gold}40` }}>Share Price Data</button>
         </div>
       ) : (
-        <QuickReportSale title={title} edition={edition} user={user} onDone={(reported)=>{
+        <QuickReportSale title={title} author={author} edition={edition} publisher={publisher} user={user} onDone={(reported)=>{
           setShowReport(false);
-          if (reported) { dbGetPriceReports(title).then(r => setCommunityData(r)); }
+          if (reported) { dbGetPriceReports(title, { author, edition, publisher }).then(r => setCommunityData(r)); }
         }} />
       )}
     </div>
   );
 }
-function QuickReportSale({ title, edition, onDone, user }) {
+function QuickReportSale({ title, author, edition, publisher, onDone, user }) {
   const [price,setPrice]=useState(""); const [source,setSource]=useState("eBay"); const [condition,setCond]=useState("Fine"); const [notes,setNotes]=useState(""); const [submitted,setSubmitted]=useState(false); const [saving,setSaving]=useState(false);
 
   if (submitted) return (
@@ -1684,14 +2026,14 @@ function QuickReportSale({ title, edition, onDone, user }) {
   const handleSubmit = async () => {
     if (!price) return;
     setSaving(true);
-    const ok = await dbReportSale(user?.id, { title, edition, price, source, condition, notes });
+    const ok = await dbReportSale(user?.id, { title, author, edition, publisher, price, source, condition, notes });
     setSaving(false);
     if (ok) { setSubmitted(true); setTimeout(() => onDone(true), 2000); }
   };
 
   return (
     <div style={{ background:"#0f0f0f", borderRadius:8, padding:16, border:`1px solid ${borderClr}` }}>
-      <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif", marginBottom:10 }}>Report a Sale</div>
+      <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif", marginBottom:10 }}>Share Price Data</div>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
         <div><label style={labelBase}>Price ($) *</label><input style={{ ...inputBase, fontSize:13, padding:"8px 10px" }} type="number" value={price} onChange={e=>setPrice(e.target.value)} placeholder="0.00" /></div>
         <div><label style={labelBase}>Source</label><select style={{ ...selectBase, fontSize:12, padding:"8px" }} value={source} onChange={e=>setSource(e.target.value)}><option>eBay</option><option>AbeBooks</option><option>Private Sale</option><option>Facebook Group</option><option>Forum</option><option>Other</option></select></div>
@@ -1844,6 +2186,11 @@ function MarketPage({ setModal, t, user }) {
   const [priceCheckBook, setPriceCheckBook] = useState(null);
   const [searchResults, setSearchResults] = useState([]);
   const [marketFeed, setMarketFeed] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [strictEditionOnly, setStrictEditionOnly] = useState(false);
+  const [ebayMode, setEbayMode] = useState("sold");
+  const searchTimer = useRef(null);
+  const searchToken = useRef(0);
 
   useEffect(() => {
     Promise.all([
@@ -1858,45 +2205,130 @@ function MarketPage({ setModal, t, user }) {
     });
   }, []);
 
+  useEffect(() => () => clearTimeout(searchTimer.current), []);
+
   const doSearch = (q) => {
     setPriceSearch(q);
-    if (q.trim().length < 2) { setSearchResults([]); return; }
-    const ql = q.toLowerCase();
-    setSearchResults(BOOK_DB.filter(b => b.title.toLowerCase().includes(ql) || b.author.toLowerCase().includes(ql)).slice(0, 8));
+    clearTimeout(searchTimer.current);
+    const trimmed = q.trim();
+    if (trimmed.length < 2) {
+      searchToken.current += 1;
+      setSearching(false);
+      setSearchResults([]);
+      return;
+    }
+
+    searchTimer.current = setTimeout(async () => {
+      const token = ++searchToken.current;
+      setSearching(true);
+      const ql = trimmed.toLowerCase();
+      const localResults = BOOK_DB
+        .filter(b => b.title.toLowerCase().includes(ql) || b.author.toLowerCase().includes(ql))
+        .map(b => ({ ...b, source: "local" }));
+
+      const [dbResults, userShelfResults, reportedResults] = await Promise.all([
+        dbSearchBooks(trimmed),
+        dbSearchUserCollection(trimmed, user?.id),
+        dbSearchReportedTitles(trimmed),
+      ]);
+      if (token !== searchToken.current) return;
+
+      const seen = new Set();
+      const merged = [];
+      [...userShelfResults, ...dbResults, ...reportedResults, ...localResults].forEach(r => {
+        const key = (r.title + "|" + (r.author || "")).toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          merged.push(r);
+        }
+      });
+      setSearchResults(merged.slice(0, 12));
+      setSearching(false);
+    }, 280);
   };
 
   return (<div style={{ padding:"24px 20px 100px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
       <div><h2 style={{ fontFamily:"'Cinzel', serif", fontSize:22, color:"#e0d6c8", margin:0 }}>The Market</h2><p style={{ color:"#555", fontSize:12, margin:"2px 0 0", fontStyle:"italic" }}>Prices, values, and trends</p></div>
-      <button onClick={()=>setModal({type:"report"})} style={{ ...btnPrimary, padding:"8px 14px", fontSize:10 }}>Report Sale</button>
+      <button onClick={()=>setModal({type:"report"})} style={{ ...btnPrimary, padding:"8px 14px", fontSize:10 }}>Share Price Data</button>
     </div>
 
     {/* Price Check Search */}
     <div style={{ background:cardBg, border:`1px solid ${gold}20`, borderRadius:10, padding:"16px 18px", marginBottom:20 }}>
       <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif", marginBottom:8 }}>Price Check</div>
       <p style={{ color:"#666", fontSize:12, margin:"0 0 10px" }}>Look up any book's estimated market value</p>
-      <input style={{ ...inputBase, fontSize:14, padding:"10px 14px" }} placeholder="Search title or author..." value={priceSearch} onChange={e=>doSearch(e.target.value)} />
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
+        <button
+          onClick={()=>setStrictEditionOnly(v=>!v)}
+          title="Strict On = exact edition comps only. Strict Off = exact + closely related edition comps."
+          style={{
+            ...btnSmall,
+            padding:"5px 10px",
+            fontSize:9,
+            borderColor: strictEditionOnly ? `${gold}70` : borderClr,
+            color: strictEditionOnly ? gold : "#666",
+            background: strictEditionOnly ? `${gold}14` : "transparent",
+          }}
+        >
+          {strictEditionOnly ? "Strict Edition: On" : "Strict Edition: Off"}
+        </button>
+        <div style={{ display:"inline-flex", border:`1px solid ${borderClr}`, borderRadius:6, overflow:"hidden" }}>
+          <button
+            onClick={()=>setEbayMode("sold")}
+            title="Sold Comps = completed/sold listings, usually better for real market value."
+            style={{ background:ebayMode==="sold"?`${gold}20`:"transparent", border:"none", color:ebayMode==="sold"?gold:"#666", padding:"5px 10px", cursor:"pointer", fontSize:9, fontFamily:"'Cinzel', serif", letterSpacing:0.8 }}
+          >
+            Sold Comps
+          </button>
+          <button
+            onClick={()=>setEbayMode("active")}
+            title="Active Listings = current asks, useful for trend but can be optimistic."
+            style={{ background:ebayMode==="active"?`${gold}20`:"transparent", border:"none", borderLeft:`1px solid ${borderClr}`, color:ebayMode==="active"?gold:"#666", padding:"5px 10px", cursor:"pointer", fontSize:9, fontFamily:"'Cinzel', serif", letterSpacing:0.8 }}
+          >
+            Active Listings
+          </button>
+        </div>
+      </div>
+      <p style={{ color:"#555", fontSize:11, margin:"0 0 10px" }}>
+        Strict compares only exact edition class (Lettered vs Numbered vs Traycased). Confidence rises with more exact comps across multiple sources.
+      </p>
+      <div style={{ position:"relative" }}>
+        <input style={{ ...inputBase, fontSize:14, padding:"10px 38px 10px 14px" }} placeholder="Search title or author..." value={priceSearch} onChange={e=>doSearch(e.target.value)} />
+        {searching && <div style={{ position:"absolute", right:12, top:"50%", transform:"translateY(-50%)", width:14, height:14, border:"2px solid #333", borderTopColor:gold, borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />}
+      </div>
 
-      {searchResults.length > 0 && !priceCheckBook && (
+      {searchResults.length > 0 && !priceCheckBook && !searching && (
         <div style={{ marginTop:8, maxHeight:200, overflowY:"auto", borderRadius:6, border:`1px solid ${borderClr}` }}>
           {searchResults.map((r,i)=>(
             <div key={i} onClick={()=>{setPriceCheckBook(r);setSearchResults([]);setPriceSearch("");}} style={{ padding:"10px 12px", cursor:"pointer", borderBottom:`1px solid ${borderClr}` }} onMouseEnter={e=>{e.currentTarget.style.background="#1a1a1a";}} onMouseLeave={e=>{e.currentTarget.style.background="transparent";}}>
               <div style={{ fontFamily:"'Cinzel', serif", fontSize:13, color:"#e0d6c8" }}>{r.title}</div>
-              <div style={{ fontSize:11, color:"#555", fontStyle:"italic" }}>{r.author} {r.year && `(${r.year})`}</div>
+              <div style={{ fontSize:11, color:"#555", fontStyle:"italic" }}>{r.author} {r.year && `(${r.year})`}{r.edition ? ` · ${r.edition}` : ""}</div>
             </div>
           ))}
         </div>
+      )}
+      {priceSearch.trim().length >= 2 && !searching && searchResults.length === 0 && !priceCheckBook && (
+        <p style={{ color:"#555", fontSize:12, margin:"8px 2px 0" }}>No matches yet. Try a shorter title or search by author.</p>
       )}
     </div>
 
     {priceCheckBook && (
       <div style={{ marginBottom:20, border:`1px solid ${borderClr}`, borderRadius:10, padding:16, background:"#0a0a0a" }}>
-        <PriceCheckPanel title={priceCheckBook.title} edition="" onClose={()=>setPriceCheckBook(null)} user={user} />
+        <PriceCheckPanel
+          title={priceCheckBook.title}
+          author={priceCheckBook.author || ""}
+          edition={priceCheckBook.edition || ""}
+          publisher={priceCheckBook.publisher || ""}
+          strictEditionOnly={strictEditionOnly}
+          ebayMode={ebayMode}
+          onClose={()=>setPriceCheckBook(null)}
+          user={user}
+        />
       </div>
     )}
 
     {/* Market Feed - collection values + reported sales */}
-    <SH title="Recent Valuations" sub="From collector shelves and reported sales" />
+    <SH title="Recent Valuations" sub="From collector shelves and community price reports" />
     {marketFeed.length > 0 ? marketFeed.map((m,i)=>(<div key={i} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:10 }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
         <div><div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{m.title}</div><div style={{ fontSize:11, color:"#555", marginTop:2 }}>{m.publisher}{m.edition ? ` \u00b7 ${m.edition}` : ""}{m.condition ? ` \u00b7 ${m.condition}` : ""}</div></div>
@@ -1906,11 +2338,10 @@ function MarketPage({ setModal, t, user }) {
     </div>))
     : <div style={{ textAlign:"center", padding:"32px 0" }}>
         <p style={{ color:"#555", fontSize:14, marginBottom:8 }}>No market data yet.</p>
-        <p style={{ color:"#444", fontSize:12, marginBottom:16 }}>Add books with values or report sales to build market data.</p>
-        <button onClick={()=>setModal({type:"report"})} style={{ ...btnPrimary, padding:"10px 20px", fontSize:12 }}>Report a Sale</button>
+        <p style={{ color:"#444", fontSize:12, marginBottom:16 }}>Add books with values or share price reports to build market data.</p>
+        <button onClick={()=>setModal({type:"report"})} style={{ ...btnPrimary, padding:"10px 20px", fontSize:12 }}>Share Price Data</button>
       </div>}
   </div>);
-}
 }
 
 function ReportSaleModal({ onClose, user }) {
@@ -1927,16 +2358,16 @@ function ReportSaleModal({ onClose, user }) {
     if (ok) { setSaved(true); setTimeout(onClose, 1500); }
   };
 
-  if (saved) return (<div style={{ textAlign:"center", padding:"32px 0" }}><div style={{ color:"#6a6", fontSize:16, marginBottom:8 }}>Sale reported!</div><p style={{ color:"#555", fontSize:13 }}>Thank you for contributing to the community.</p></div>);
+  if (saved) return (<div style={{ textAlign:"center", padding:"32px 0" }}><div style={{ color:"#6a6", fontSize:16, marginBottom:8 }}>Price data shared!</div><p style={{ color:"#555", fontSize:13 }}>Thank you for contributing to the community.</p></div>);
 
   return (<div>
-    <h2 style={{ fontFamily:"'Cinzel', serif", color:gold, margin:"0 0 16px", fontSize:18 }}>Report a Sale</h2>
-    <p style={{ color:"#666", fontSize:12, margin:"0 0 14px" }}>Help build the pricing database. Report sales you've seen or made.</p>
+    <h2 style={{ fontFamily:"'Cinzel', serif", color:gold, margin:"0 0 16px", fontSize:18 }}>Share Price Data</h2>
+    <p style={{ color:"#666", fontSize:12, margin:"0 0 14px" }}>Help build the pricing database with observed listings and completed sales.</p>
     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Book Title *</label><input style={inputBase} value={f.title} onChange={e=>s("title",e.target.value)} placeholder="e.g. The Stand" /></div>
       <div><label style={labelBase}>Publisher</label><input style={inputBase} value={f.publisher} onChange={e=>s("publisher",e.target.value)} placeholder="e.g. Cemetery Dance" /></div>
       <div><label style={labelBase}>Edition</label><input style={inputBase} value={f.edition} onChange={e=>s("edition",e.target.value)} placeholder="e.g. Lettered" /></div>
-      <div><label style={labelBase}>Sale Price ($) *</label><input style={inputBase} type="number" value={f.price} onChange={e=>s("price",e.target.value)} /></div>
+      <div><label style={labelBase}>Observed Price ($) *</label><input style={inputBase} type="number" value={f.price} onChange={e=>s("price",e.target.value)} /></div>
       <div><label style={labelBase}>Source</label><select style={selectBase} value={f.source} onChange={e=>s("source",e.target.value)}><option>eBay</option><option>AbeBooks</option><option>Private Sale</option><option>Facebook Group</option><option>Forum</option><option>Other</option></select></div>
       <div><label style={labelBase}>Condition</label><select style={selectBase} value={f.condition} onChange={e=>s("condition",e.target.value)}>{CONDITIONS.map(c=><option key={c}>{c}</option>)}</select></div>
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Notes</label><input style={inputBase} value={f.notes} onChange={e=>s("notes",e.target.value)} placeholder="Details..." /></div>
