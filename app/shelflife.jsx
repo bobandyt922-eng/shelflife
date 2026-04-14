@@ -80,6 +80,7 @@ const selectBase = { ...inputBase, appearance:"auto" };
 const labelBase = { display:"block", fontSize:10, textTransform:"uppercase", letterSpacing:2, color:gold, marginBottom:4, fontFamily:"'Cinzel', serif" };
 const emptyBook = { title:"",author:"",publisher:"",editionType:"",limitation:"",condition:"Mint",purchasePrice:"",currentValue:"",notes:"",coverUrl:"" };
 const SHELF_VALUATION_SOURCE = "Shelf Valuation";
+const FOLLOW_TABLE_CANDIDATES = ["collector_follows", "user_follows", "follows"];
 
 const toPriceNumber = (value) => {
   const n = Number(value);
@@ -521,6 +522,132 @@ async function dbGetCommunityActivity(limit = 10) {
   });
 }
 
+let cachedFollowTableName = null;
+let attemptedFollowTableResolve = false;
+
+function isMissingFollowTableError(error) {
+  const code = error?.code || "";
+  const msg = String(error?.message || "").toLowerCase();
+  return code === "42P01" || code === "PGRST205" || msg.includes("does not exist") || msg.includes("not found");
+}
+
+async function resolveFollowTableName() {
+  if (attemptedFollowTableResolve) return cachedFollowTableName;
+  attemptedFollowTableResolve = true;
+
+  for (const tableName of FOLLOW_TABLE_CANDIDATES) {
+    const { error } = await supabase
+      .from(tableName)
+      .select("follower_id", { head: true, count: "exact" })
+      .limit(1);
+    if (!error || !isMissingFollowTableError(error)) {
+      cachedFollowTableName = tableName;
+      return cachedFollowTableName;
+    }
+  }
+
+  cachedFollowTableName = null;
+  return null;
+}
+
+async function dbGetFollowerCounts(collectorIds = []) {
+  const ids = [...new Set((collectorIds || []).filter(Boolean))];
+  if (!ids.length) return {};
+  const tableName = await resolveFollowTableName();
+  if (!tableName) return {};
+
+  const { data, error } = await supabase
+    .from(tableName)
+    .select("followed_id")
+    .in("followed_id", ids);
+  if (error) { console.error("Load follower counts error:", error); return {}; }
+
+  const counts = {};
+  for (const id of ids) counts[id] = 0;
+  (data || []).forEach(row => {
+    if (!row.followed_id) return;
+    counts[row.followed_id] = (counts[row.followed_id] || 0) + 1;
+  });
+  return counts;
+}
+
+async function dbGetFollowSnapshot(userId, collectorIds = []) {
+  const tableName = await resolveFollowTableName();
+  if (!tableName) return { available: false, followingIds: [], followerCounts: {} };
+
+  const ids = [...new Set((collectorIds || []).filter(Boolean))];
+  const followerCounts = await dbGetFollowerCounts(ids);
+  let followingIds = [];
+
+  if (userId) {
+    const { data, error } = await supabase
+      .from(tableName)
+      .select("followed_id")
+      .eq("follower_id", userId);
+    if (error) {
+      console.error("Load following list error:", error);
+      return { available: true, followingIds: [], followerCounts };
+    }
+    followingIds = [...new Set((data || []).map(row => row.followed_id).filter(Boolean))];
+  }
+
+  return { available: true, followingIds, followerCounts };
+}
+
+async function dbFollowCollector(userId, collectorId) {
+  if (!userId || !collectorId || userId === collectorId) return false;
+  const tableName = await resolveFollowTableName();
+  if (!tableName) return false;
+
+  const { error } = await supabase
+    .from(tableName)
+    .insert({ follower_id: userId, followed_id: collectorId });
+  if (error && error.code !== "23505") {
+    console.error("Follow collector error:", error);
+    return false;
+  }
+  return true;
+}
+
+async function dbUnfollowCollector(userId, collectorId) {
+  if (!userId || !collectorId) return false;
+  const tableName = await resolveFollowTableName();
+  if (!tableName) return false;
+
+  const { error } = await supabase
+    .from(tableName)
+    .delete()
+    .eq("follower_id", userId)
+    .eq("followed_id", collectorId);
+  if (error) { console.error("Unfollow collector error:", error); return false; }
+  return true;
+}
+
+async function dbGetFollowingCollectors(userId, limit = 24) {
+  if (!userId) return [];
+  const tableName = await resolveFollowTableName();
+  if (!tableName) return [];
+
+  const { data, error } = await supabase
+    .from(tableName)
+    .select("followed_id")
+    .eq("follower_id", userId)
+    .limit(300);
+  if (error) { console.error("Load following collector ids error:", error); return []; }
+
+  const followedIds = [...new Set((data || []).map(row => row.followed_id).filter(Boolean))];
+  if (!followedIds.length) return [];
+
+  const publicCollectors = await dbGetPublicCollectors(120);
+  const byId = {};
+  publicCollectors.forEach(c => { byId[c.id] = c; });
+
+  return followedIds
+    .map(id => byId[id])
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
 async function dbGetPublicCollectors(limit = 24) {
   const { data, error } = await supabase
     .from("profiles")
@@ -607,6 +734,7 @@ async function dbLoadPublicCollectorProfile(collectorId) {
   const topBooks = [...books]
     .sort((a, b) => (b.rankValue || 0) - (a.rankValue || 0))
     .slice(0, 8);
+  const followerCounts = await dbGetFollowerCounts([collectorId]);
   const tier = books.length >= 100 ? "Obsidian" : books.length >= 50 ? "Gold" : books.length >= 20 ? "Silver" : "Bronze";
 
   return {
@@ -615,6 +743,7 @@ async function dbLoadPublicCollectorProfile(collectorId) {
     booksCount: books.length,
     totalValue: collector.show_value ? totalValue : null,
     showValue: !!collector.show_value,
+    followerCount: followerCounts[collectorId] || 0,
     tier,
     topBooks,
     books,
@@ -2480,22 +2609,143 @@ function ReportSaleModal({ onClose, user }) {
 /* ═══════════════════════════════════════════
    DISCOVER PAGE
    ═══════════════════════════════════════════ */
-function DiscoverPage({ onViewProfile, userId }) {
+function DiscoverPage({ onViewProfile, userId, showToast }) {
   const [communityFeed, setCommunityFeed] = useState([]);
   const [collectors, setCollectors] = useState([]);
   const [collectorsLoading, setCollectorsLoading] = useState(true);
+  const [followAvailable, setFollowAvailable] = useState(true);
+  const [followingIds, setFollowingIds] = useState([]);
+  const [followerCounts, setFollowerCounts] = useState({});
+  const [followingCollectors, setFollowingCollectors] = useState([]);
+  const [followOnly, setFollowOnly] = useState(false);
+  const [followBusyId, setFollowBusyId] = useState("");
 
   useEffect(() => { dbGetCommunityActivity(8).then(setCommunityFeed); }, []);
   useEffect(() => {
     let mounted = true;
-    dbGetPublicCollectors(24).then(rows => {
+    dbGetPublicCollectors(36).then(rows => {
       if (!mounted) return;
       setCollectors(rows);
       setCollectorsLoading(false);
     });
     return () => { mounted = false; };
   }, []);
-  const visibleCollectors = userId ? collectors.filter(r => r.id !== userId) : collectors;
+
+  useEffect(() => {
+    let mounted = true;
+    Promise.resolve().then(async () => {
+      const snapshot = await dbGetFollowSnapshot(userId, collectors.map(c => c.id));
+      if (!mounted) return;
+      setFollowAvailable(snapshot.available);
+      setFollowingIds(snapshot.followingIds);
+      setFollowerCounts(snapshot.followerCounts);
+
+      if (userId && snapshot.available) {
+        const followedCollectors = await dbGetFollowingCollectors(userId, 24);
+        if (!mounted) return;
+        setFollowingCollectors(followedCollectors);
+        if (followOnly && !followedCollectors.length) setFollowOnly(false);
+        const extraCounts = await dbGetFollowerCounts(followedCollectors.map(c => c.id));
+        if (!mounted) return;
+        setFollowerCounts(prev => ({ ...prev, ...extraCounts }));
+      } else {
+        setFollowingCollectors([]);
+        if (followOnly) setFollowOnly(false);
+      }
+    });
+    return () => { mounted = false; };
+  }, [userId, collectors, followOnly]);
+
+  const followingSet = new Set(followingIds);
+  const visibleCollectors = (userId ? collectors.filter(r => r.id !== userId) : collectors).map(c => ({
+    ...c,
+    isFollowing: followingSet.has(c.id),
+    followerCount: followerCounts[c.id] || 0,
+  }));
+  const filteredCollectors = followOnly ? visibleCollectors.filter(c => c.isFollowing) : visibleCollectors;
+  const followingList = (userId ? followingCollectors.filter(r => r.id !== userId) : []).map(c => ({
+    ...c,
+    isFollowing: followingSet.has(c.id),
+    followerCount: followerCounts[c.id] || 0,
+  }));
+
+  const handleToggleFollow = async (collector) => {
+    if (!userId) {
+      showToast?.("Sign in to follow collectors.", "error");
+      return;
+    }
+    if (!followAvailable) {
+      showToast?.("Follow system is not configured yet.", "error");
+      return;
+    }
+    if (followBusyId === collector.id) return;
+
+    const isFollowing = followingSet.has(collector.id);
+    setFollowBusyId(collector.id);
+    setFollowingIds(prev => isFollowing ? prev.filter(id => id !== collector.id) : [...prev, collector.id]);
+    setFollowerCounts(prev => ({ ...prev, [collector.id]: Math.max(0, (prev[collector.id] || 0) + (isFollowing ? -1 : 1)) }));
+    setFollowingCollectors(prev => {
+      if (isFollowing) return prev.filter(c => c.id !== collector.id);
+      if (prev.some(c => c.id === collector.id)) return prev;
+      return [collector, ...prev].slice(0, 24);
+    });
+
+    const ok = isFollowing
+      ? await dbUnfollowCollector(userId, collector.id)
+      : await dbFollowCollector(userId, collector.id);
+
+    if (!ok) {
+      setFollowingIds(prev => isFollowing ? [...prev, collector.id] : prev.filter(id => id !== collector.id));
+      setFollowerCounts(prev => ({ ...prev, [collector.id]: Math.max(0, (prev[collector.id] || 0) + (isFollowing ? 1 : -1)) }));
+      setFollowingCollectors(prev => {
+        if (!isFollowing) return prev.filter(c => c.id !== collector.id);
+        if (prev.some(c => c.id === collector.id)) return prev;
+        return [collector, ...prev].slice(0, 24);
+      });
+      showToast?.("Could not update follow status right now.", "error");
+      setFollowBusyId("");
+      return;
+    }
+
+    const freshCounts = await dbGetFollowerCounts([collector.id]);
+    setFollowerCounts(prev => ({ ...prev, ...freshCounts }));
+    setFollowBusyId("");
+  };
+
+  const renderCollectorCard = (collector, keyPrefix) => (
+    <div key={`${keyPrefix}-${collector.id}`} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:8 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:12 }}>
+        <div style={{ minWidth:0 }}>
+          <div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{collector.name}</div>
+          <div style={{ fontSize:11, color:"#555", marginTop:2 }}>{collector.booksCount} books · {collector.tier} Shelf · {collector.followerCount} followers</div>
+        </div>
+        <div style={{ textAlign:"right", flexShrink:0 }}>
+          <div style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Collection</div>
+          <div style={{ fontFamily:"'Cinzel', serif", fontSize:15, color:gold }}>{collector.showValue ? `$${collector.totalValue.toLocaleString()}` : "Private"}</div>
+        </div>
+      </div>
+      <div style={{ display:"flex", justifyContent:"flex-end", gap:8, marginTop:10 }}>
+        {userId && followAvailable && (
+          <button
+            onClick={() => handleToggleFollow(collector)}
+            disabled={followBusyId === collector.id}
+            style={{
+              ...btnSmall,
+              fontSize:9,
+              padding:"5px 10px",
+              opacity: followBusyId === collector.id ? 0.6 : 1,
+              borderColor: collector.isFollowing ? `${gold}50` : borderClr,
+              color: collector.isFollowing ? gold : "#666",
+              background: collector.isFollowing ? `${gold}16` : "transparent",
+            }}
+          >
+            {followBusyId === collector.id ? "Saving..." : collector.isFollowing ? "Following" : "Follow"}
+          </button>
+        )}
+        <button onClick={() => onViewProfile(collector)} style={{ ...btnSmall, fontSize:9, padding:"5px 10px" }}>View Shelf</button>
+      </div>
+    </div>
+  );
 
   return (<div style={{ padding:"24px 20px 100px" }}>
     <h2 style={{ fontFamily:"'Cinzel', serif", fontSize:22, color:"#e0d6c8", margin:"0 0 4px" }}>Discover</h2>
@@ -2504,35 +2754,40 @@ function DiscoverPage({ onViewProfile, userId }) {
     <SH title="New Releases" />
     {NEW_RELEASES.map(r=>(<div key={r.id} style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:8 }}><div style={{ display:"flex", justifyContent:"space-between" }}><div><div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8" }}>{r.title}</div><div style={{ fontSize:12, color:"#555", fontStyle:"italic" }}>{r.author} · {r.publisher}</div><div style={{ fontSize:11, color:"#444", marginTop:4 }}>{r.editions}</div></div><span style={{ fontSize:9, padding:"3px 8px", borderRadius:4, background:r.status==="Available"?"rgba(100,170,100,0.12)":r.status==="Sold Out"?"rgba(200,100,100,0.12)":`${gold}12`, color:r.status==="Available"?"#6a6":r.status==="Sold Out"?"#c66":gold, fontFamily:"'Cinzel', serif", alignSelf:"flex-start" }}>{r.status}</span></div></div>))}
 
+    {userId && followAvailable && (
+      <div style={{ marginTop:28 }}>
+        <SH title="Following" sub="Collectors you follow" />
+        {followingList.length > 0 ? followingList.map(c => renderCollectorCard(c, "following")) : (
+          <div style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"18px 16px", color:"#555", fontSize:12 }}>
+            Follow collectors to build your private discover feed.
+          </div>
+        )}
+      </div>
+    )}
+
     {/* Collectors */}
     <div style={{ marginTop:28 }}>
       <SH title="Collectors" sub="Browse other collectors' shelves" />
+      {userId && followAvailable && (
+        <div style={{ display:"inline-flex", border:`1px solid ${borderClr}`, borderRadius:6, overflow:"hidden", marginBottom:10 }}>
+          <button onClick={() => setFollowOnly(false)} style={{ background:!followOnly?`${gold}20`:"transparent", border:"none", color:!followOnly?gold:"#666", padding:"5px 10px", cursor:"pointer", fontSize:9, fontFamily:"'Cinzel', serif", letterSpacing:0.8 }}>All Collectors</button>
+          <button onClick={() => setFollowOnly(true)} style={{ background:followOnly?`${gold}20`:"transparent", border:"none", borderLeft:`1px solid ${borderClr}`, color:followOnly?gold:"#666", padding:"5px 10px", cursor:"pointer", fontSize:9, fontFamily:"'Cinzel', serif", letterSpacing:0.8 }}>Following Only ({followingIds.length})</button>
+        </div>
+      )}
+      {userId && !followAvailable && (
+        <p style={{ color:"#555", fontSize:11, margin:"0 0 10px" }}>
+          Follow mode will appear once a follow table is configured in Supabase.
+        </p>
+      )}
       {collectorsLoading ? (
         <div style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"24px 20px", textAlign:"center", color:"#555", fontSize:12 }}>Loading public collectors...</div>
-      ) : visibleCollectors.length > 0 ? (
-        visibleCollectors.map(c => (
-          <button
-            key={c.id}
-            onClick={() => onViewProfile(c)}
-            style={{ width:"100%", textAlign:"left", background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"14px 16px", marginBottom:8, cursor:"pointer" }}
-          >
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12 }}>
-              <div style={{ minWidth:0 }}>
-                <div style={{ fontFamily:"'Cinzel', serif", fontSize:14, color:"#e0d6c8", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.name}</div>
-                <div style={{ fontSize:11, color:"#555", marginTop:2 }}>{c.booksCount} books · {c.tier} Shelf</div>
-              </div>
-              <div style={{ textAlign:"right", flexShrink:0 }}>
-                <div style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Collection</div>
-                <div style={{ fontFamily:"'Cinzel', serif", fontSize:15, color:gold }}>{c.showValue ? `$${c.totalValue.toLocaleString()}` : "Private"}</div>
-              </div>
-            </div>
-          </button>
-        ))
+      ) : filteredCollectors.length > 0 ? (
+        filteredCollectors.map(c => renderCollectorCard(c, "discover"))
       ) : (
         <div style={{ background:cardBg, border:`1px solid ${borderClr}`, borderRadius:10, padding:"24px 20px", textAlign:"center" }}>
           <div style={{ fontSize:24, marginBottom:8, opacity:0.3 }}>&#9734;</div>
-          <p style={{ color:"#666", fontSize:14, margin:"0 0 4px" }}>No public collectors yet</p>
-          <p style={{ color:"#444", fontSize:12, margin:0 }}>Turn on Public Profile in Settings to appear here.</p>
+          <p style={{ color:"#666", fontSize:14, margin:"0 0 4px" }}>{followOnly ? "You are not following any public collectors yet" : "No public collectors yet"}</p>
+          <p style={{ color:"#444", fontSize:12, margin:0 }}>{followOnly ? "Switch to All Collectors and follow a shelf you like." : "Turn on Public Profile in Settings to appear here."}</p>
         </div>
       )}
     </div>
@@ -2558,6 +2813,7 @@ function PublicProfileView({ collector, onBack }) {
       <div style={{ display:"flex", justifyContent:"center", gap:24, marginTop:16 }}>
         <div style={{ textAlign:"center" }}><div style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Books</div><div style={{ fontSize:20, fontFamily:"'Cinzel', serif", color:"#e0d6c8" }}>{collector.booksCount}</div></div>
         <div style={{ textAlign:"center" }}><div style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Value</div><div style={{ fontSize:20, fontFamily:"'Cinzel', serif", color:gold }}>{collector.showValue ? `$${collector.totalValue.toLocaleString()}` : "Private"}</div></div>
+        <div style={{ textAlign:"center" }}><div style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>Followers</div><div style={{ fontSize:20, fontFamily:"'Cinzel', serif", color:"#e0d6c8" }}>{collector.followerCount || 0}</div></div>
       </div>
     </div>
     <SH title="Showcase" sub="Top pieces in this collection" />
@@ -3070,7 +3326,7 @@ export default function App() {
         const full = await dbLoadPublicCollectorProfile(c.id);
         if (full) setViewingCollector(full);
         else showToast("This collector profile is private.", "error");
-      }} userId={user?.id} t={t} />}
+      }} userId={user?.id} showToast={showToast} />}
       {page === "profile" && <ProfilePage books={books} wishlist={wishlist} setPage={setPage} onLogout={handleLogout} darkMode={darkMode} setDarkMode={setDarkMode} t={t} user={user} profile={profile} setProfile={setProfile} />}
       {page === "wishlist" && <WishlistPage wishlist={wishlist} setWishlist={setWishlist} setPage={setPage} t={t} user={user} />}
 
