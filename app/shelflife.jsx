@@ -1897,7 +1897,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user, str
             Based on {stats.count} {edition ? "edition-matched " : ""}data point{stats.count !== 1 ? "s" : ""} (shelves + reports + eBay)
           </div>
           <div style={{ display:"inline-flex", alignItems:"center", gap:8, marginTop:10, padding:"4px 10px", border:`1px solid ${confidence.color}55`, borderRadius:999 }}>
-            <span style={{ fontSize:9, color:confidence.color, fontFamily:"'Cinzel', serif", letterSpacing:1.2, textTransform:"uppercase" }}>Confidence: {confidence.label}</span>
+            <span title="Confidence considers sample size, source diversity, and strict edition match quality." style={{ fontSize:9, color:confidence.color, fontFamily:"'Cinzel', serif", letterSpacing:1.2, textTransform:"uppercase" }}>Confidence: {confidence.label}</span>
             <span style={{ fontSize:9, color:"#666" }}>{confidence.detail}</span>
           </div>
           {edition && strictEditionOnly && (
@@ -1916,6 +1916,11 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user, str
           <div style={{ fontSize:11, color:gold, textTransform:"uppercase", letterSpacing:1.5, fontFamily:"'Cinzel', serif" }}>eBay Listings</div>
           {ebayLoading ? <span style={{ fontSize:10, color:"#555" }}>Loading...</span> : <span style={{ fontSize:10, color:"#444" }}>{ebayData.length} {ebayMode === "sold" ? "sold comp" : "listing"}{ebayData.length !== 1 ? "s" : ""}</span>}
         </div>
+        {edition && !ebayLoading && (
+          <div style={{ fontSize:9, color:"#555", marginBottom:6 }}>
+            Badge guide: Edition Match = same class, Related Edition = nearby class, Edition Unknown = listing does not name an edition clearly.
+          </div>
+        )}
         {ebayLoading ? (
           <div style={{ padding:"12px", textAlign:"center" }}><div style={{ width:16, height:16, border:"2px solid #333", borderTopColor:"#c4a265", borderRadius:"50%", animation:"spin 0.8s linear infinite", margin:"0 auto" }} /></div>
         ) : ebayError ? (
@@ -1929,7 +1934,10 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user, str
                   {e.condition && <span style={{ color:"#555", fontSize:9 }}>{e.condition}</span>}
                   <span style={{ fontSize:8, color:"#333", background:"#1a1a1a", padding:"1px 4px", borderRadius:2 }}>Match: {e.score}%</span>
                   {edition && e.matchType && e.matchType !== "any" && (
-                    <span style={{ fontSize:8, color:e.matchType === "strict" ? "#6a6" : "#888", border:`1px solid ${e.matchType === "strict" ? "#2f5" : "#666"}50`, padding:"1px 4px", borderRadius:2 }}>
+                    <span
+                      title={e.matchType === "strict" ? "Listing explicitly matches your edition class." : e.matchType === "related" ? "Listing is a nearby edition class; useful but less exact." : "Listing lacks clear edition wording."}
+                      style={{ fontSize:8, color:e.matchType === "strict" ? "#6a6" : "#888", border:`1px solid ${e.matchType === "strict" ? "#2f5" : "#666"}50`, padding:"1px 4px", borderRadius:2 }}
+                    >
                       {e.matchType === "strict" ? "Edition Match" : e.matchType === "related" ? "Related Edition" : "Edition Unknown"}
                     </span>
                   )}
@@ -2252,6 +2260,7 @@ function MarketPage({ setModal, t, user }) {
       <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
         <button
           onClick={()=>setStrictEditionOnly(v=>!v)}
+          title="Strict On = exact edition comps only. Strict Off = exact + closely related edition comps."
           style={{
             ...btnSmall,
             padding:"5px 10px",
@@ -2266,18 +2275,23 @@ function MarketPage({ setModal, t, user }) {
         <div style={{ display:"inline-flex", border:`1px solid ${borderClr}`, borderRadius:6, overflow:"hidden" }}>
           <button
             onClick={()=>setEbayMode("sold")}
+            title="Sold Comps = completed/sold listings, usually better for real market value."
             style={{ background:ebayMode==="sold"?`${gold}20`:"transparent", border:"none", color:ebayMode==="sold"?gold:"#666", padding:"5px 10px", cursor:"pointer", fontSize:9, fontFamily:"'Cinzel', serif", letterSpacing:0.8 }}
           >
             Sold Comps
           </button>
           <button
             onClick={()=>setEbayMode("active")}
+            title="Active Listings = current asks, useful for trend but can be optimistic."
             style={{ background:ebayMode==="active"?`${gold}20`:"transparent", border:"none", borderLeft:`1px solid ${borderClr}`, color:ebayMode==="active"?gold:"#666", padding:"5px 10px", cursor:"pointer", fontSize:9, fontFamily:"'Cinzel', serif", letterSpacing:0.8 }}
           >
             Active Listings
           </button>
         </div>
       </div>
+      <p style={{ color:"#555", fontSize:11, margin:"0 0 10px" }}>
+        Strict compares only exact edition class (Lettered vs Numbered vs Traycased). Confidence rises with more exact comps across multiple sources.
+      </p>
       <div style={{ position:"relative" }}>
         <input style={{ ...inputBase, fontSize:14, padding:"10px 38px 10px 14px" }} placeholder="Search title or author..." value={priceSearch} onChange={e=>doSearch(e.target.value)} />
         {searching && <div style={{ position:"absolute", right:12, top:"50%", transform:"translateY(-50%)", width:14, height:14, border:"2px solid #333", borderTopColor:gold, borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />}
