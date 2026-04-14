@@ -206,6 +206,42 @@ function calculateMarketStats(pricePoints = []) {
   };
 }
 
+function calculateConfidence(pricePoints = [], targetEdition = "") {
+  if (pricePoints.length === 0) {
+    return {
+      label: "Low",
+      color: "#777",
+      detail: targetEdition ? "No edition-matched data points yet." : "No market data points yet.",
+    };
+  }
+
+  const sourceCount = new Set(pricePoints.map(p => p.source)).size;
+  if (!targetEdition) {
+    if (pricePoints.length >= 8 && sourceCount >= 2) {
+      return { label: "High", color: "#6a6", detail: "Strong sample size across multiple sources." };
+    }
+    if (pricePoints.length >= 4) {
+      return { label: "Medium", color: "#b99a5a", detail: "Reasonable sample size, but still developing." };
+    }
+    return { label: "Low", color: "#c77", detail: "Limited data points; estimate may move quickly." };
+  }
+
+  const strictCount = pricePoints.filter(p => p.matchType === "strict").length;
+  const relatedCount = pricePoints.filter(p => p.matchType === "related").length;
+
+  if (strictCount >= 3 && sourceCount >= 2) {
+    return { label: "High", color: "#6a6", detail: `${strictCount} strict edition matches across ${sourceCount} sources.` };
+  }
+  if (strictCount >= 2 || (strictCount >= 1 && relatedCount >= 1)) {
+    return { label: "Medium", color: "#b99a5a", detail: `${strictCount} strict + ${relatedCount} related edition matches.` };
+  }
+  return {
+    label: "Low",
+    color: "#c77",
+    detail: strictCount > 0 ? "Very limited strict edition data." : "Using sparse related-edition signals.",
+  };
+}
+
 /* ═══════════════════════════════════════════
    DATABASE FUNCTIONS
    ═══════════════════════════════════════════ */
@@ -1825,6 +1861,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
     targetEdition: edition,
   });
   const stats = calculateMarketStats(points);
+  const confidence = calculateConfidence(points, edition);
   const hasData = stats.hasData;
   const avg = stats.avg;
   const low = stats.low;
@@ -1847,6 +1884,10 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
           <div style={{ fontSize:12, color:"#666", marginTop:4 }}>Range: ${low.toLocaleString()} \u2014 ${high.toLocaleString()}</div>
           <div style={{ fontSize:10, color:"#444", marginTop:4 }}>
             Based on {stats.count} {edition ? "edition-matched " : ""}data point{stats.count !== 1 ? "s" : ""} (shelves + reports + eBay)
+          </div>
+          <div style={{ display:"inline-flex", alignItems:"center", gap:8, marginTop:10, padding:"4px 10px", border:`1px solid ${confidence.color}55`, borderRadius:999 }}>
+            <span style={{ fontSize:9, color:confidence.color, fontFamily:"'Cinzel', serif", letterSpacing:1.2, textTransform:"uppercase" }}>Confidence: {confidence.label}</span>
+            <span style={{ fontSize:9, color:"#666" }}>{confidence.detail}</span>
           </div>
         </div>
       ) : (
@@ -1942,7 +1983,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
           <button onClick={()=>setShowReport(true)} style={{ ...btnSmall, color:gold, borderColor:`${gold}40` }}>Share Price Data</button>
         </div>
       ) : (
-        <QuickReportSale title={title} edition={edition} user={user} onDone={(reported)=>{
+        <QuickReportSale title={title} author={author} edition={edition} publisher={publisher} user={user} onDone={(reported)=>{
           setShowReport(false);
           if (reported) { dbGetPriceReports(title, { author, edition, publisher }).then(r => setCommunityData(r)); }
         }} />
@@ -1950,7 +1991,7 @@ function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
     </div>
   );
 }
-function QuickReportSale({ title, edition, onDone, user }) {
+function QuickReportSale({ title, author, edition, publisher, onDone, user }) {
   const [price,setPrice]=useState(""); const [source,setSource]=useState("eBay"); const [condition,setCond]=useState("Fine"); const [notes,setNotes]=useState(""); const [submitted,setSubmitted]=useState(false); const [saving,setSaving]=useState(false);
 
   if (submitted) return (
@@ -1963,7 +2004,7 @@ function QuickReportSale({ title, edition, onDone, user }) {
   const handleSubmit = async () => {
     if (!price) return;
     setSaving(true);
-    const ok = await dbReportSale(user?.id, { title, edition, price, source, condition, notes });
+    const ok = await dbReportSale(user?.id, { title, author, edition, publisher, price, source, condition, notes });
     setSaving(false);
     if (ok) { setSubmitted(true); setTimeout(() => onDone(true), 2000); }
   };
