@@ -59,15 +59,22 @@ The schema is managed in Supabase. Key tables:
 
 ```
 app/
-  layout.tsx          # Root layout, metadata, fonts
-  page.tsx            # Client wrapper for ShelfLife
-  shelflife.jsx       # Main application (all screens + components)
-  globals.css         # Tailwind imports + shared keyframes
-  api/ebay/route.js   # Marketplace search aggregator (eBay + Google CSE)
+  layout.tsx                # Root layout, metadata, fonts
+  page.tsx                  # Client wrapper for ShelfLife
+  shelflife.jsx             # UI components and screens
+  globals.css               # Tailwind imports + shared keyframes
+  api/
+    ebay/route.js           # Marketplace search aggregator (eBay + Google CSE)
+    price-report/route.js   # Server-validated price report submission
 lib/
-  supabase.js         # Supabase browser client singleton
-  edition-classes.js  # Shared edition classification logic
+  supabase.js               # Supabase browser client singleton
+  constants.js              # App data, style objects, dropdown options
+  edition-classes.js        # Shared edition classification logic
+  pricing.js                # Price aggregation, stats, and confidence scoring
+  db.js                     # All Supabase database operations
+supabase/
+  schema.sql                # Database schema documentation (tables, indexes, RLS)
 public/
-  manifest.json       # PWA manifest
-  sw.js               # Service worker (network-first + cache fallback)
+  manifest.json             # PWA manifest
+  sw.js                     # Service worker (network-first + cache fallback)
 ```
