@@ -38,10 +38,14 @@ async function getEbayToken() {
   return cachedToken;
 }
 
+// eBay category 267 = "Books & Magazines" — filters out DVDs, games, etc.
+const EBAY_BOOKS_CATEGORY = "267";
+
 async function searchEbay(token, query) {
   const ebayUrl = new URL("https://api.ebay.com/buy/browse/v1/item_summary/search");
   ebayUrl.searchParams.set("q", query);
-  ebayUrl.searchParams.set("limit", "40");
+  ebayUrl.searchParams.set("category_ids", EBAY_BOOKS_CATEGORY);
+  ebayUrl.searchParams.set("limit", "50");
 
   const resp = await fetch(ebayUrl.toString(), {
     headers: {
@@ -68,9 +72,12 @@ async function searchEbaySold(query) {
   ebayUrl.searchParams.set("REST-PAYLOAD", "");
   ebayUrl.searchParams.set("GLOBAL-ID", "EBAY-US");
   ebayUrl.searchParams.set("keywords", query);
-  ebayUrl.searchParams.set("paginationInput.entriesPerPage", "40");
+  ebayUrl.searchParams.set("categoryId", EBAY_BOOKS_CATEGORY);
+  ebayUrl.searchParams.set("paginationInput.entriesPerPage", "50");
   ebayUrl.searchParams.set("itemFilter(0).name", "SoldItemsOnly");
   ebayUrl.searchParams.set("itemFilter(0).value", "true");
+  ebayUrl.searchParams.set("itemFilter(1).name", "MinPrice");
+  ebayUrl.searchParams.set("itemFilter(1).value", "5.00");
 
   const resp = await fetch(ebayUrl.toString());
   if (!resp.ok) return [];
@@ -215,14 +222,27 @@ export async function GET(request) {
       return NextResponse.json({ error: "eBay auth failed", results: [] });
     }
 
-    // Try multiple search strategies and combine results
     const authorLast = author ? author.split(" ").pop() : "";
     const editionTerms = getEditionSearchTerms(edition);
-    const queries = [
+
+    // Build multiple search queries from broad to specific for better coverage
+    const rawQueries = [
+      // Broad: just title + author last name (catches most listings)
       [title, authorLast].filter(Boolean).join(" "),
-      [title, author, publisher].filter(Boolean).join(" "),
-      [title, ...editionTerms, publisher].filter(Boolean).join(" "),
-    ].map(q => q.trim()).filter(Boolean);
+      // Medium: title + full author
+      author ? [title, author].filter(Boolean).join(" ") : null,
+      // Specific: title + author + publisher
+      publisher ? [title, authorLast, publisher].filter(Boolean).join(" ") : null,
+      // Edition-specific: title + edition terms
+      editionTerms.length ? [title, authorLast, ...editionTerms].filter(Boolean).join(" ") : null,
+      // Ultra-broad fallback: just the title (for rare titles where author clutters results)
+      title.split(" ").length <= 3 ? `"${title}" book` : null,
+    ];
+    const seenQueries = new Set();
+    const queries = rawQueries
+      .filter(Boolean)
+      .map(q => q.trim())
+      .filter(q => { if (seenQueries.has(q)) return false; seenQueries.add(q); return true; });
 
     // Run searches in parallel
     const providerRuns = [];
@@ -369,14 +389,19 @@ function calculateMatchScore(listingTitle, bookTitle, author, publisher, edition
     score += 5;
   }
 
-  // Penalties
-  if (lt.includes("dvd") || lt.includes("blu-ray") || lt.includes("vhs") ||
-      lt.includes("audiobook") || lt.includes("board game") || lt.includes("video game") ||
-      lt.includes("funko") || lt.includes("poster") || lt.includes("t-shirt") ||
-      lt.includes("vinyl") || lt.includes("soundtrack") || lt.includes("cd ")) {
+  // Penalties for non-book items
+  const nonBookTerms = [
+    "dvd", "blu-ray", "vhs", "audiobook", "audio book", "board game", "video game",
+    "funko", "poster", "t-shirt", "tee shirt", "vinyl", "soundtrack", "cd ",
+    "cassette", "laserdisc", "manga", "comic book", "graphic novel",
+    "kindle", "nook", "ebook", "e-book", "digital download",
+    "action figure", "toy", "plush", "magnet", "keychain", "bookmark only",
+    "movie prop", "replica", "costume",
+  ];
+  if (nonBookTerms.some(term => lt.includes(term))) {
     score -= 50;
   }
-  if (lt.includes("lot of") || lt.includes("book lot") || lt.includes("bundle of")) {
+  if (lt.includes("lot of") || lt.includes("book lot") || lt.includes("bundle of") || lt.includes("set of")) {
     score -= 20;
   }
 
