@@ -18,6 +18,7 @@ const EDITION_CLASS_RULES = [
 ];
 
 async function getEbayToken() {
+  if (!EBAY_APP_ID || !EBAY_CERT_ID) return null;
   if (cachedToken && Date.now() < tokenExpiry) return cachedToken;
 
   const credentials = Buffer.from(`${EBAY_APP_ID}:${EBAY_CERT_ID}`).toString("base64");
@@ -94,13 +95,19 @@ export async function GET(request) {
     return NextResponse.json({ error: "Title is required", results: [] });
   }
 
-  if (!EBAY_APP_ID || !EBAY_CERT_ID) {
-    return NextResponse.json({ error: "eBay API not configured", results: [] });
+  const needsToken = mode === "active";
+  if (!EBAY_APP_ID || (needsToken && !EBAY_CERT_ID)) {
+    return NextResponse.json({
+      error: needsToken
+        ? "eBay active listings are not configured"
+        : "eBay sold comps are not configured",
+      results: [],
+    });
   }
 
   try {
-    const token = await getEbayToken();
-    if (!token) {
+    const token = needsToken ? await getEbayToken() : null;
+    if (needsToken && !token) {
       return NextResponse.json({ error: "eBay auth failed", results: [] });
     }
 
@@ -114,7 +121,9 @@ export async function GET(request) {
     ].map(q => q.trim()).filter(Boolean);
 
     // Run searches in parallel
-    const allResults = await Promise.all(queries.map(q => mode === "sold" ? searchEbaySold(q) : searchEbay(token, q)));
+    const allResults = await Promise.all(
+      queries.map(q => (mode === "sold" ? searchEbaySold(q) : searchEbay(token, q)))
+    );
 
     // Merge and deduplicate by item ID or title
     const seen = new Set();
@@ -158,6 +167,11 @@ export async function GET(request) {
       } else {
         filteredCandidates = [];
       }
+    }
+    // If edition filters were too strict, provide a best-effort fallback.
+    if (!filteredCandidates.length) {
+      const fallbackMin = Math.max(minScore - 8, 20);
+      filteredCandidates = scored.filter(item => item.score >= fallbackMin && item.price > 0 && item.matchType !== "mismatch");
     }
     const filtered = removePriceOutliers(filteredCandidates)
       .sort((a, b) => b.score - a.score)
