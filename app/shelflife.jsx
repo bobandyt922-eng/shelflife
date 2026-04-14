@@ -484,7 +484,14 @@ function SearchPage({ onBack, onAddBook, user, setBooks, books, showToast }) {
   const handleAddFromDetail = () => {
     if (!selectedBook) return;
     const coverUrl = selectedBook.coverId ? `https://covers.openlibrary.org/b/id/${selectedBook.coverId}-L.jpg` : "";
-    setShowAddForm({ ...emptyBook, title: selectedBook.title, author: selectedBook.author, coverUrl });
+    setShowAddForm({
+      ...emptyBook,
+      title: selectedBook.title,
+      author: selectedBook.author,
+      coverUrl,
+      isbn: selectedBook.isbn || "",
+      publisher: selectedBook.olPublisher || "",
+    });
     setSelectedBook(null);
   };
 
@@ -610,8 +617,10 @@ function SearchPage({ onBack, onAddBook, user, setBooks, books, showToast }) {
               <div style={{ flex:1 }}>
                 <h2 style={{ fontFamily:"'Cinzel', serif", fontSize:20, color:"#e0d6c8", margin:"0 0 6px", lineHeight:1.2 }}>{selectedBook.title}</h2>
                 <p style={{ fontSize:15, color:"#888", fontStyle:"italic", margin:"0 0 8px" }}>by {selectedBook.author}</p>
-                {selectedBook.year && <p style={{ fontSize:13, color:"#555", margin:"0 0 12px" }}>First published {selectedBook.year}</p>}
+                {selectedBook.year && <p style={{ fontSize:13, color:"#555", margin:"0 0 4px" }}>First published {selectedBook.year}</p>}
                 {selectedBook.pages && <p style={{ fontSize:12, color:"#555", margin:"0 0 4px" }}>{selectedBook.pages} pages</p>}
+                {selectedBook.isbn && <p style={{ fontSize:11, color:"#444", margin:"0 0 4px" }}>ISBN: {selectedBook.isbn}</p>}
+                {selectedBook.olPublisher && <p style={{ fontSize:11, color:"#444", margin:"0 0 4px" }}>Publisher: {selectedBook.olPublisher}</p>}
                 <button onClick={handleAddFromDetail} style={{ ...btnPrimary, padding:"10px 20px", fontSize:12, marginTop:8 }}>+ Add to Shelf</button>
               </div>
             </div>
@@ -984,16 +993,17 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
     } catch (err) { setUploading(false); }
   };
 
+  const [estimateMsg, setEstimateMsg] = useState(null);
+
   const estimateValue = async () => {
     if (!f.title.trim()) return;
     setEstimating(true);
+    setEstimateMsg(null);
     const lookup = { author: f.author, edition: f.editionType, publisher: f.publisher };
-    // Get community reports + collection values
     const [reports, collectionVals] = await Promise.all([
       dbGetPriceReports(f.title, lookup),
       dbGetCollectionValues(f.title, lookup),
     ]);
-    // Get eBay data
     let ebayPrices = [];
     try {
       const params = new URLSearchParams({ title: f.title });
@@ -1011,7 +1021,16 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
       targetEdition: f.editionType,
     });
     const stats = calculateMarketStats(points);
-    if (stats.hasData) s("currentValue", String(stats.avg));
+    if (stats.hasData) {
+      s("currentValue", String(stats.avg));
+      const sources = [];
+      if (reports.length) sources.push(`${reports.length} report${reports.length > 1 ? "s" : ""}`);
+      if (collectionVals.length) sources.push(`${collectionVals.length} shelf value${collectionVals.length > 1 ? "s" : ""}`);
+      if (ebayPrices.length) sources.push(`${ebayPrices.length} listing${ebayPrices.length > 1 ? "s" : ""}`);
+      setEstimateMsg({ type: "success", text: `Estimated $${stats.avg.toLocaleString()} from ${sources.join(", ")} (range: $${stats.low.toLocaleString()}–$${stats.high.toLocaleString()})` });
+    } else {
+      setEstimateMsg({ type: "none", text: "No pricing data found for this title yet. Try adding edition and publisher details, or report a sale to seed the market." });
+    }
     setEstimating(false);
   };
 
@@ -1090,7 +1109,8 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
             {estimating ? "..." : "Est."}
           </button>
         </div>
-        {f.currentValue && <div style={{ fontSize:9, color:"#444", marginTop:2 }}>Based on shelves, reports, and marketplace data</div>}
+        {estimateMsg && <div style={{ fontSize:10, color:estimateMsg.type === "success" ? "#6a6" : "#b99a5a", marginTop:4, lineHeight:1.4 }}>{estimateMsg.text}</div>}
+        {f.currentValue && !estimateMsg && <div style={{ fontSize:9, color:"#444", marginTop:2 }}>Based on shelves, reports, and marketplace data</div>}
       </div>
       <div style={{ gridColumn:"1/-1" }}><label style={labelBase}>Notes</label><textarea style={{ ...inputBase, minHeight:50, resize:"vertical" }} value={f.notes} onChange={e=>s("notes",e.target.value)} /></div>
     </div>
@@ -1484,11 +1504,17 @@ function MarketPage({ setModal, t, user }) {
       dbGetRecentPriceReports(10),
       dbGetRecentCollectionEntries(15),
     ]).then(([reports, entries]) => {
-      const all = [...reports, ...entries].sort((a, b) => {
+      const seen = new Set();
+      const deduped = [];
+      [...reports, ...entries].forEach(item => {
+        const key = `${(item.title || "").toLowerCase()}|${(item.user || "").toLowerCase()}|${item.price}`;
+        if (!seen.has(key)) { seen.add(key); deduped.push(item); }
+      });
+      deduped.sort((a, b) => {
         const parseTime = (t) => { const n = parseInt(t) || 0; if (t.includes("min")) return n; if (t.includes("hr")) return n * 60; if (t.includes("day")) return n * 1440; return 99999; };
         return parseTime(a.date) - parseTime(b.date);
       });
-      setMarketFeed(all.slice(0, 20));
+      setMarketFeed(deduped.slice(0, 20));
     });
   }, []);
 
