@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0a0a0a;
+  --foreground: #e0d6c8;
 }
 
 @theme inline {
@@ -12,15 +12,57 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Dark mode (default) CSS custom properties */
+.vault-app {
+  --card-bg: #131313;
+  --border-clr: #1c1c1c;
+  --input-bg: #111;
+  --text: #e0d6c8;
+  --text-sub: #888;
+  --text-muted: #444;
+  --text-heading: #e0d6c8;
+  --text-body: #999;
+  --text-dim: #555;
+  --text-faint: #333;
+  --surface-alt: #0f0f0f;
+  --surface-dark: #111;
+  --gold-accent: #c4a265;
+  --gold-dark: #a07830;
+  --gain: #6a6;
+  --loss: #c66;
+}
+
+/* Light mode CSS custom properties */
+.vault-app.light {
+  --card-bg: #ffffff;
+  --border-clr: #d0c8b8;
+  --input-bg: #f0ece4;
+  --text: #2a2318;
+  --text-sub: #7a7060;
+  --text-muted: #9a9080;
+  --text-heading: #2a2318;
+  --text-body: #5a5040;
+  --text-dim: #8a8070;
+  --text-faint: #aaa098;
+  --surface-alt: rgba(0,0,0,0.03);
+  --surface-dark: #f8f5f0;
+  --gold-accent: #8a6a20;
+  --gold-dark: #6a5010;
+  --gain: #2a8a2a;
+  --loss: #c44;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(-10px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
 }

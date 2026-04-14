@@ -1,4 +1,8 @@
 import { NextResponse } from "next/server";
+import {
+  getEditionClass,
+  getEditionMatchType,
+} from "@/lib/edition-classes";
 
 const EBAY_APP_ID = process.env.EBAY_APP_ID;
 const EBAY_CERT_ID = process.env.EBAY_CERT_ID;
@@ -11,17 +15,6 @@ const GOOGLE_MARKET_DOMAINS = (process.env.GOOGLE_MARKET_DOMAINS || "abebooks.co
 
 let cachedToken = null;
 let tokenExpiry = 0;
-const EDITION_CLASS_RULES = [
-  { key: "lettered", terms: ["lettered", "letter ed", "roman numeral"] },
-  { key: "numbered", terms: ["numbered", "numbered edition", "limited numbered"] },
-  { key: "traycased", terms: ["traycased", "traycase", "slipcased", "slipcase"] },
-  { key: "deluxe", terms: ["deluxe", "ultra deluxe", "artist edition"] },
-  { key: "gift", terms: ["gift edition"] },
-  { key: "first", terms: ["first edition", "first printing", "1st edition", "1st printing"] },
-  { key: "arc-proof", terms: ["arc", "proof", "galley", "uncorrected proof"] },
-  { key: "paperback", terms: ["paperback", "mass market", "trade paperback"] },
-  { key: "hardcover", terms: ["hardcover"] },
-];
 
 async function getEbayToken() {
   if (!EBAY_APP_ID || !EBAY_CERT_ID) return null;
@@ -45,10 +38,14 @@ async function getEbayToken() {
   return cachedToken;
 }
 
+// eBay category 267 = "Books & Magazines" — filters out DVDs, games, etc.
+const EBAY_BOOKS_CATEGORY = "267";
+
 async function searchEbay(token, query) {
   const ebayUrl = new URL("https://api.ebay.com/buy/browse/v1/item_summary/search");
   ebayUrl.searchParams.set("q", query);
-  ebayUrl.searchParams.set("limit", "40");
+  ebayUrl.searchParams.set("category_ids", EBAY_BOOKS_CATEGORY);
+  ebayUrl.searchParams.set("limit", "50");
 
   const resp = await fetch(ebayUrl.toString(), {
     headers: {
@@ -75,9 +72,12 @@ async function searchEbaySold(query) {
   ebayUrl.searchParams.set("REST-PAYLOAD", "");
   ebayUrl.searchParams.set("GLOBAL-ID", "EBAY-US");
   ebayUrl.searchParams.set("keywords", query);
-  ebayUrl.searchParams.set("paginationInput.entriesPerPage", "40");
+  ebayUrl.searchParams.set("categoryId", EBAY_BOOKS_CATEGORY);
+  ebayUrl.searchParams.set("paginationInput.entriesPerPage", "50");
   ebayUrl.searchParams.set("itemFilter(0).name", "SoldItemsOnly");
   ebayUrl.searchParams.set("itemFilter(0).value", "true");
+  ebayUrl.searchParams.set("itemFilter(1).name", "MinPrice");
+  ebayUrl.searchParams.set("itemFilter(1).value", "5.00");
 
   const resp = await fetch(ebayUrl.toString());
   if (!resp.ok) return [];
@@ -222,14 +222,27 @@ export async function GET(request) {
       return NextResponse.json({ error: "eBay auth failed", results: [] });
     }
 
-    // Try multiple search strategies and combine results
     const authorLast = author ? author.split(" ").pop() : "";
     const editionTerms = getEditionSearchTerms(edition);
-    const queries = [
+
+    // Build multiple search queries from broad to specific for better coverage
+    const rawQueries = [
+      // Broad: just title + author last name (catches most listings)
       [title, authorLast].filter(Boolean).join(" "),
-      [title, author, publisher].filter(Boolean).join(" "),
-      [title, ...editionTerms, publisher].filter(Boolean).join(" "),
-    ].map(q => q.trim()).filter(Boolean);
+      // Medium: title + full author
+      author ? [title, author].filter(Boolean).join(" ") : null,
+      // Specific: title + author + publisher
+      publisher ? [title, authorLast, publisher].filter(Boolean).join(" ") : null,
+      // Edition-specific: title + edition terms
+      editionTerms.length ? [title, authorLast, ...editionTerms].filter(Boolean).join(" ") : null,
+      // Ultra-broad fallback: just the title (for rare titles where author clutters results)
+      title.split(" ").length <= 3 ? `"${title}" book` : null,
+    ];
+    const seenQueries = new Set();
+    const queries = rawQueries
+      .filter(Boolean)
+      .map(q => q.trim())
+      .filter(q => { if (seenQueries.has(q)) return false; seenQueries.add(q); return true; });
 
     // Run searches in parallel
     const providerRuns = [];
@@ -376,14 +389,19 @@ function calculateMatchScore(listingTitle, bookTitle, author, publisher, edition
     score += 5;
   }
 
-  // Penalties
-  if (lt.includes("dvd") || lt.includes("blu-ray") || lt.includes("vhs") ||
-      lt.includes("audiobook") || lt.includes("board game") || lt.includes("video game") ||
-      lt.includes("funko") || lt.includes("poster") || lt.includes("t-shirt") ||
-      lt.includes("vinyl") || lt.includes("soundtrack") || lt.includes("cd ")) {
+  // Penalties for non-book items
+  const nonBookTerms = [
+    "dvd", "blu-ray", "vhs", "audiobook", "audio book", "board game", "video game",
+    "funko", "poster", "t-shirt", "tee shirt", "vinyl", "soundtrack", "cd ",
+    "cassette", "laserdisc", "manga", "comic book", "graphic novel",
+    "kindle", "nook", "ebook", "e-book", "digital download",
+    "action figure", "toy", "plush", "magnet", "keychain", "bookmark only",
+    "movie prop", "replica", "costume",
+  ];
+  if (nonBookTerms.some(term => lt.includes(term))) {
     score -= 50;
   }
-  if (lt.includes("lot of") || lt.includes("book lot") || lt.includes("bundle of")) {
+  if (lt.includes("lot of") || lt.includes("book lot") || lt.includes("bundle of") || lt.includes("set of")) {
     score -= 20;
   }
 
@@ -401,42 +419,6 @@ function getEditionSearchTerms(edition) {
   if (c === "first") return ["first edition", "first printing"];
   if (c === "arc-proof") return ["arc", "proof", "galley"];
   return [edition];
-}
-
-function normalizeText(value) {
-  return (value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-function getEditionClass(value) {
-  const text = normalizeText(value);
-  if (!text) return "";
-  for (const group of EDITION_CLASS_RULES) {
-    if (group.terms.some(term => text.includes(term))) return group.key;
-  }
-  return "";
-}
-
-function isRelatedEditionClass(targetClass, candidateClass) {
-  if (!targetClass || !candidateClass) return false;
-  if (targetClass === candidateClass) return true;
-  const related = {
-    lettered: ["traycased", "deluxe"],
-    numbered: ["traycased", "deluxe"],
-    traycased: ["lettered", "numbered", "deluxe"],
-    deluxe: ["traycased", "lettered", "numbered"],
-    gift: ["hardcover"],
-  };
-  return (related[targetClass] || []).includes(candidateClass);
-}
-
-function getEditionMatchType(targetEdition, candidateText) {
-  const targetClass = getEditionClass(targetEdition);
-  if (!targetClass) return "any";
-  const candidateClass = getEditionClass(candidateText);
-  if (!candidateClass) return "unknown";
-  if (candidateClass === targetClass) return "strict";
-  if (isRelatedEditionClass(targetClass, candidateClass)) return "related";
-  return "mismatch";
 }
 
 function removePriceOutliers(items) {
