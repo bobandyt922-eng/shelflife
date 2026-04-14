@@ -10,7 +10,6 @@ async function getEbayToken() {
   if (cachedToken && Date.now() < tokenExpiry) return cachedToken;
 
   const credentials = Buffer.from(`${EBAY_APP_ID}:${EBAY_CERT_ID}`).toString("base64");
-
   const resp = await fetch("https://api.ebay.com/identity/v1/oauth2/token", {
     method: "POST",
     headers: {
@@ -20,58 +19,48 @@ async function getEbayToken() {
     body: "grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope",
   });
 
-  const text = await resp.text();
+  if (!resp.ok) return null;
 
-  if (!resp.ok) {
-    return { error: `OAuth failed (${resp.status}): ${text}` };
-  }
-
-  try {
-    const data = JSON.parse(text);
-    cachedToken = data.access_token;
-    tokenExpiry = Date.now() + (data.expires_in - 60) * 1000;
-    return cachedToken;
-  } catch (e) {
-    return { error: `OAuth parse failed: ${text.substring(0, 200)}` };
-  }
+  const data = await resp.json();
+  cachedToken = data.access_token;
+  tokenExpiry = Date.now() + (data.expires_in - 60) * 1000;
+  return cachedToken;
 }
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const title = searchParams.get("title") || "";
+  const author = searchParams.get("author") || "";
   const publisher = searchParams.get("publisher") || "";
   const edition = searchParams.get("edition") || "";
 
   if (!title.trim()) {
-    return NextResponse.json({ error: "Title is required" }, { status: 400 });
+    return NextResponse.json({ error: "Title is required", results: [] });
   }
 
   if (!EBAY_APP_ID || !EBAY_CERT_ID) {
-    return NextResponse.json({
-      error: "eBay API not configured",
-      debug: { hasAppId: !!EBAY_APP_ID, hasCertId: !!EBAY_CERT_ID },
-    }, { status: 500 });
+    return NextResponse.json({ error: "eBay API not configured", results: [] });
   }
 
   try {
-    const tokenResult = await getEbayToken();
-
-    // If token is an error object
-    if (typeof tokenResult === "object" && tokenResult.error) {
-      return NextResponse.json({
-        error: "eBay authentication failed",
-        debug: tokenResult.error,
-        results: [],
-      });
+    const token = await getEbayToken();
+    if (!token) {
+      return NextResponse.json({ error: "eBay auth failed", results: [] });
     }
 
-    const token = tokenResult;
-    const query = buildSearchQuery(title, publisher, edition);
+    // BROAD search: title + author + "book"
+    // Scoring algorithm handles publisher/edition relevance after
+    let query = title;
+    if (author) {
+      // Use last name for cleaner search
+      const lastName = author.split(" ").pop();
+      query = title + " " + lastName;
+    }
+    query += " book";
 
-    // Search eBay Browse API - no category filter for broader results
     const ebayUrl = new URL("https://api.ebay.com/buy/browse/v1/item_summary/search");
     ebayUrl.searchParams.set("q", query);
-    ebayUrl.searchParams.set("limit", "25");
+    ebayUrl.searchParams.set("limit", "30");
 
     const resp = await fetch(ebayUrl.toString(), {
       headers: {
@@ -80,29 +69,14 @@ export async function GET(request) {
       },
     });
 
-    const responseText = await resp.text();
-
     if (!resp.ok) {
-      return NextResponse.json({
-        error: "eBay search failed",
-        debug: { status: resp.status, response: responseText.substring(0, 500) },
-        results: [],
-      });
+      return NextResponse.json({ error: "eBay search failed", results: [] });
     }
 
-    let data;
-    try {
-      data = JSON.parse(responseText);
-    } catch (e) {
-      return NextResponse.json({
-        error: "Failed to parse eBay response",
-        debug: responseText.substring(0, 500),
-        results: [],
-      });
-    }
-
+    const data = await resp.json();
     const items = data.itemSummaries || [];
 
+    // Score every result against our specific criteria
     const scored = items.map(item => {
       const itemTitle = item.title || "";
       const price = parseFloat(item.price?.value || "0");
@@ -110,13 +84,13 @@ export async function GET(request) {
       const imageUrl = item.thumbnailImages?.[0]?.imageUrl || item.image?.imageUrl || "";
       const listingUrl = item.itemWebUrl || "";
 
-      const score = calculateMatchScore(itemTitle, title, publisher, edition);
+      const score = calculateMatchScore(itemTitle, title, author, publisher, edition);
 
-      return { title: itemTitle, price, condition, imageUrl, listingUrl, score, date: "Current" };
+      return { title: itemTitle, price, condition, imageUrl, listingUrl, score, date: "Active" };
     });
 
     const filtered = scored
-      .filter(item => item.score >= 25 && item.price > 0)
+      .filter(item => item.score >= 20 && item.price > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 15);
 
@@ -128,68 +102,83 @@ export async function GET(request) {
     });
 
   } catch (error) {
-    return NextResponse.json({
-      error: "Unexpected error",
-      debug: error.message,
-      results: [],
-    });
+    return NextResponse.json({ error: "Unexpected error: " + error.message, results: [] });
   }
 }
 
-function buildSearchQuery(title, publisher, edition) {
-  let parts = [title];
-  if (publisher) {
-    const pubMap = {
-      "Cemetery Dance": "Cemetery Dance", "Subterranean Press": "Subterranean Press",
-      "Suntup Editions": "Suntup", "Centipede Press": "Centipede Press",
-      "Gauntlet Press": "Gauntlet", "Borderlands Press": "Borderlands",
-      "Thunderstorm Books": "Thunderstorm", "PS Publishing": "PS Publishing",
-      "Charnel House": "Charnel House", "Dark Regions Press": "Dark Regions",
-      "Delirium Press": "Delirium",
-    };
-    parts.push(pubMap[publisher] || publisher);
-  }
-  if (edition) {
-    const el = edition.toLowerCase();
-    if (el.includes("lettered")) parts.push("lettered");
-    else if (el.includes("numbered")) parts.push("numbered");
-    else if (el.includes("traycase")) parts.push("traycase");
-    else if (el.includes("deluxe")) parts.push("deluxe");
-    else if (el.includes("first edition") || el.includes("first printing")) parts.push("first edition");
-    else if (el.includes("signed")) parts.push("signed");
-  }
-  return parts.join(" ");
-}
-
-function calculateMatchScore(listingTitle, bookTitle, publisher, edition) {
+function calculateMatchScore(listingTitle, bookTitle, author, publisher, edition) {
   const lt = listingTitle.toLowerCase();
   const bt = bookTitle.toLowerCase();
   let score = 0;
 
-  const titleWords = bt.split(/\s+/).filter(w => w.length > 2);
+  // Title matching (0-50 points)
+  const titleWords = bt.split(/\s+/).filter(w => w.length > 1);
   const matchedWords = titleWords.filter(w => lt.includes(w));
-  if (titleWords.length > 0) score += Math.round((matchedWords.length / titleWords.length) * 40);
+  if (titleWords.length > 0) {
+    score += Math.round((matchedWords.length / titleWords.length) * 40);
+  }
   if (lt.includes(bt)) score += 10;
 
-  if (publisher) {
-    const pubWords = publisher.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-    if (pubWords.some(w => lt.includes(w))) score += 20;
+  // Author matching (0-10 points)
+  if (author) {
+    const authorLast = author.split(" ").pop().toLowerCase();
+    if (lt.includes(authorLast)) score += 10;
   }
 
-  if (edition) {
-    const editionTerms = {
-      "lettered": ["lettered", "letter"], "numbered": ["numbered", "limited", "#"],
-      "traycased": ["traycase"], "deluxe": ["deluxe"],
-      "first edition": ["first edition", "1st edition"], "signed": ["signed", "autograph"],
-    };
-    const el = edition.toLowerCase();
-    for (const [key, terms] of Object.entries(editionTerms)) {
-      if (el.includes(key)) { if (terms.some(t => lt.includes(t))) score += 20; break; }
+  // Publisher matching (0-20 points)
+  if (publisher) {
+    const pl = publisher.toLowerCase();
+    if (lt.includes(pl)) {
+      score += 20;
+    } else {
+      const pubWords = pl.split(/\s+/).filter(w => w.length > 2);
+      const matched = pubWords.filter(w => lt.includes(w));
+      if (matched.length > 0) score += Math.round((matched.length / pubWords.length) * 15);
     }
   }
 
-  if (lt.includes("lot of") || lt.includes("book lot")) score -= 30;
-  if (lt.includes("dvd") || lt.includes("blu-ray") || lt.includes("audiobook")) score -= 50;
+  // Edition matching (0-20 points)
+  if (edition) {
+    const editionTerms = {
+      "lettered": ["lettered", "letter ed", "ltd letter"],
+      "numbered": ["numbered", "limited", "/500", "/750", "/1000", "/250", "/350"],
+      "traycased": ["traycase", "traycased", "tray case"],
+      "deluxe": ["deluxe", "dlx"],
+      "ultra-deluxe": ["ultra", "ultra-deluxe"],
+      "artist edition": ["artist edition", "artist ed"],
+      "gift edition": ["gift edition", "gift ed"],
+      "first edition": ["first edition", "1st edition", "1st ed", "1st/1st", "first printing"],
+      "signed": ["signed", "autograph", "autographed"],
+    };
+    const el = edition.toLowerCase();
+    for (const [key, terms] of Object.entries(editionTerms)) {
+      if (el.includes(key)) {
+        if (terms.some(t => lt.includes(t))) score += 20;
+        break;
+      }
+    }
+  }
+
+  // Book-related bonus
+  if (lt.includes("book") || lt.includes("novel") || lt.includes("hardcover") ||
+      lt.includes("paperback") || lt.includes("edition") || lt.includes("press") ||
+      lt.includes("signed") || lt.includes("first")) {
+    score += 5;
+  }
+
+  // Penalties for non-book items
+  if (lt.includes("dvd") || lt.includes("blu-ray") || lt.includes("bluray") ||
+      lt.includes("vhs") || lt.includes("audiobook") || lt.includes("audio cd") ||
+      lt.includes("board game") || lt.includes("video game") || lt.includes("funko") ||
+      lt.includes("poster") || lt.includes("t-shirt") || lt.includes("tshirt") ||
+      lt.includes("vinyl") || lt.includes("soundtrack")) {
+    score -= 50;
+  }
+
+  // Penalty for lot listings
+  if (lt.includes("lot of") || lt.includes("book lot") || lt.includes("set of ") || lt.includes("bundle")) {
+    score -= 20;
+  }
 
   return Math.max(0, Math.min(100, score));
 }

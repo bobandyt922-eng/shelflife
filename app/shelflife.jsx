@@ -1362,6 +1362,7 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
     let ebayPrices = [];
     try {
       const params = new URLSearchParams({ title: f.title });
+      if (f.author) params.set("author", f.author);
       if (f.publisher) params.set("publisher", f.publisher);
       if (f.editionType) params.set("edition", f.editionType);
       const resp = await fetch(`/api/ebay?${params.toString()}`);
@@ -1458,7 +1459,7 @@ function BookForm({ book, onSave, onCancel, isEdit }) {
   </div>);
 }
 
-function PriceCheckPanel({ title, edition, publisher, onClose, user }) {
+function PriceCheckPanel({ title, author, edition, publisher, onClose, user }) {
   const [loading, setLoading] = useState(true);
   const [communityData, setCommunityData] = useState([]);
   const [ebayData, setEbayData] = useState([]);
@@ -1469,6 +1470,7 @@ function PriceCheckPanel({ title, edition, publisher, onClose, user }) {
   useEffect(() => {
     dbGetPriceReports(title).then(r => { setCommunityData(r); setLoading(false); });
     const params = new URLSearchParams({ title });
+    if (author) params.set("author", author);
     if (publisher) params.set("publisher", publisher);
     if (edition) params.set("edition", edition);
     fetch(`/api/ebay?${params.toString()}`)
@@ -1743,7 +1745,7 @@ function DetailView({ book, onEdit, onDelete, onClose, onUpdateCover, user }) {
       </button>
     ) : (
       <div style={{ marginBottom:14, border:`1px solid ${borderClr}`, borderRadius:10, padding:16, background:"#0a0a0a" }}>
-        <PriceCheckPanel title={book.title} edition={book.editionType} publisher={book.publisher} onClose={()=>setShowPriceCheck(false)} user={user} />
+        <PriceCheckPanel title={book.title} author={book.author} edition={book.editionType} publisher={book.publisher} onClose={()=>setShowPriceCheck(false)} user={user} />
       </div>
     )}
 
