@@ -869,9 +869,8 @@ function CoverShelfView({ books, onSelect }) {
   );
 }
 
-function ShelfPage({ books, setBooks, modal, setModal, t, user, setPage, showToast }) {
+function ShelfPage({ books, setBooks, modal, setModal, t, user, setPage, showToast, viewMode, setViewMode }) {
   const [search,setSearch]=useState(""); const [sortBy,setSortBy]=useState("title"); const [prefill,setPrefill]=useState(null); const [confirmDel,setConfirmDel]=useState(null);
-  const [viewMode, setViewMode] = useState("list"); // "list" | "shelf" | "covers"
   const [showInvestment, setShowInvestment] = useState(false);
   const filtered = books.filter(b=>{const q=search.toLowerCase(); return !q||b.title.toLowerCase().includes(q)||b.author.toLowerCase().includes(q)||(b.publisher||"").toLowerCase().includes(q);}).sort((a,b)=>{if(sortBy==="title")return a.title.localeCompare(b.title);if(sortBy==="author")return a.author.localeCompare(b.author);if(sortBy==="value")return(Number(b.currentValue)||0)-(Number(a.currentValue)||0);return b.id-a.id;});
 
@@ -2258,6 +2257,7 @@ export default function App() {
   const [books, setBooks] = useState([]);
   const [modal, setModal] = useState(null);
   const [wishlist, setWishlist] = useState([]);
+  const [shelfViewMode, setShelfViewMode] = useState("list");
   const [viewingCollector, setViewingCollector] = useState(null);
   const [darkMode, setDarkMode] = useState(() => { try { const s = localStorage.getItem("shelflife-dark"); return s !== null ? s === "true" : true; } catch(e) { return true; } });
   const [user, setUser] = useState(null);
@@ -2438,7 +2438,7 @@ export default function App() {
 
       {page === "home" && <HomePage books={books} setPage={setPage} t={t} user={user} setBooks={setBooks} setModal={setModal} showToast={showToast} />}
       {page === "search" && <SearchPage onBack={()=>setPage("home")} user={user} setBooks={setBooks} books={books} showToast={showToast} />}
-      {page === "shelf" && <ShelfPage books={books} setBooks={setBooks} modal={modal} setModal={setModal} t={t} user={user} setPage={setPage} showToast={showToast} />}
+      {page === "shelf" && <ShelfPage books={books} setBooks={setBooks} modal={modal} setModal={setModal} t={t} user={user} setPage={setPage} showToast={showToast} viewMode={shelfViewMode} setViewMode={setShelfViewMode} />}
       {page === "market" && <MarketPage setModal={setModal} t={t} user={user} />}
       {page === "discover" && <DiscoverPage onViewProfile={async c => {
         const full = await dbLoadPublicCollectorProfile(c.id);
